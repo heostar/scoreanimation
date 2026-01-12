@@ -329,14 +329,10 @@ def calculate_key_signature_width(draw: ImageDraw.Draw, keySignature: key.KeySig
     return total_width
 
 class MeasureGroupInfo:
-    rightHandClef: clef.Clef
-    leftHandClef: clef.Clef
     keySignature: key.KeySignature
     timeSignature: Fraction
 
-    def __init__(self, rightHandClef: clef.Clef, leftHandClef: clef.Clef, keySignature: key.KeySignature, timeSignature: tuple[int, int]) -> None:
-        self.rightHandClef = rightHandClef
-        self.leftHandClef = leftHandClef
+    def __init__(self, keySignature: key.KeySignature, timeSignature: tuple[int, int]) -> None:
         self.keySignature = keySignature
         self.timeSignature = timeSignature
 
@@ -901,17 +897,23 @@ def get_note_type(note_type: str, duration: float) -> str:
     else:
         return note_type
 
-def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: ImageDraw.Draw, measure: stream.Measure, xCumulated: int, yBottomLine: int, widthPerMeasure: int, opacity: int, isFirstMeasureInGroup: bool = False, active_ties: dict = None) -> tuple[MeasureGroupInfo, List[dict], dict]:
+def draw_measure(
+    measureGroupInfo: MeasureGroupInfo,
+    draw: ImageDraw.Draw,
+    measure: stream.Measure,
+    xCumulated: int,
+    yBottomLine: int,
+    widthPerMeasure: int,
+    isFirstMeasureInGroup: bool = False,
+    active_ties: dict = None,
+    clefChanges: list[dict] = []) -> tuple[MeasureGroupInfo, List[dict], dict]:
     # Check if this measures's clef, key signature, or time signature has changed from measureGroupInfo.
     
     # If it has changed, draw the symbols that changed and draw the notes following the new symbols. 
     # If it has not changed, draw the notes following the measureGroupInfo.
     
     # Get current clef, key signature, and time signature from the measure
-    if measure.clef != None:
-        currentClef = measure.clef
-    else:
-        currentClef = measureGroupInfo.rightHandClef if isRightHand else measureGroupInfo.leftHandClef
+    currentClef = measure.clef if measure.clef else measure.getContextByClass(clef.Clef)
     if measure.keySignature != None:
         currentKeySignature = measure.keySignature
     else:
@@ -922,7 +924,6 @@ def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: Im
         currentTimeSignature = measureGroupInfo.timeSignature
     
     # Check for changes
-    clefChanged = currentClef.name != (measureGroupInfo.rightHandClef.name if isRightHand else measureGroupInfo.leftHandClef.name)
     keySignatureChanged = (currentKeySignature is not None and measureGroupInfo.keySignature is not None and
                            currentKeySignature.sharps != measureGroupInfo.keySignature.sharps)
     # measureGroupInfo.timeSignature is a tuple (numerator, denominator)
@@ -937,17 +938,9 @@ def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: Im
         clefChar = trebleChar
     else:
         clefChar = bassChar
-    if clefChanged:
-        # Draw new clef
-        bbox = draw.textbbox((0, 0), clefChar, font=load_music_font(FONT_SIZES['clef']))
-        xCumulated += X_CLEF_OFFSET
-        clefY = yBottomLine - STAFF_LINE_SPACING*2 - (bbox[3] - bbox[1])/2
-        draw.text((xCumulated, clefY), clefChar, fill=(0, 0, 0, opacity), font=load_music_font(FONT_SIZES['clef']), anchor='lt')
-        xCumulated += bbox[2] - bbox[0]
-        changedSymbolsWidth += bbox[2] - bbox[0]
     if keySignatureChanged and currentKeySignature.sharps != 0:
         # Draw new key signature
-        keySignatureWidth = draw_key_signature(draw, currentKeySignature.sharps, xCumulated, yBottomLine, clefChar, opacity)
+        keySignatureWidth = draw_key_signature(draw, currentKeySignature.sharps, xCumulated, yBottomLine, clefChar)
         xCumulated += keySignatureWidth
         changedSymbolsWidth += keySignatureWidth    
     if timeSignatureChanged:
@@ -960,18 +953,18 @@ def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: Im
         bboxDenom = draw.textbbox((0, 0), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], font=timeSignatureFont)
         bboxNom = draw.textbbox((0, 0), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], font=timeSignatureFont)
         if bboxDenom[2] - bboxDenom[0] > bboxNom[2] - bboxNom[0]:
-            draw.text((xCumulated, yDenom), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-            draw.text((xCumulated + (bboxDenom[2] - bboxDenom[0])//2 - (bboxNom[2] - bboxNom[0])//2, yNom), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
+            draw.text((xCumulated, yDenom), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+            draw.text((xCumulated + (bboxDenom[2] - bboxDenom[0])//2 - (bboxNom[2] - bboxNom[0])//2, yNom), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
             xCumulated += bboxDenom[2] - bboxDenom[0]
             changedSymbolsWidth += bboxDenom[2] - bboxDenom[0]
         elif bboxNom[2] - bboxNom[0] > bboxDenom[2] - bboxDenom[0]:
-            draw.text((xCumulated + (bboxNom[2] - bboxNom[0])//2 - (bboxDenom[2] - bboxDenom[0])//2, yDenom), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-            draw.text((xCumulated, yNom), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
+            draw.text((xCumulated + (bboxNom[2] - bboxNom[0])//2 - (bboxDenom[2] - bboxDenom[0])//2, yDenom), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+            draw.text((xCumulated, yNom), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
             xCumulated += bboxNom[2] - bboxNom[0]
             changedSymbolsWidth += bboxNom[2] - bboxNom[0]
         else:
-            draw.text((xCumulated, yDenom), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-            draw.text((xCumulated, yNom), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
+            draw.text((xCumulated, yDenom), MUSICAL_SYMBOLS[str(currentTimeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+            draw.text((xCumulated, yNom), MUSICAL_SYMBOLS[str(currentTimeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
             xCumulated += bboxNom[2] - bboxNom[0]
             changedSymbolsWidth += bboxNom[2] - bboxNom[0]
     
@@ -1036,11 +1029,33 @@ def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: Im
         active_ties = active_ties.copy()
     tie_curves = []  # List of tie curves to draw: {'start': (x, y), 'end': (x, y), 'curveDown': bool, 'xLimitStart': int, 'xLimitEnd': int}
     
-    availableWidth = widthPerMeasure - changedSymbolsWidth
+    totalClefWidthChanges = 0
+    for clefChange in clefChanges:
+        totalClefWidthChanges += clefChange['width'] + X_CLEF_OFFSET
+    availableWidth = widthPerMeasure - changedSymbolsWidth - totalClefWidthChanges
     noteKeyFrames = []
     for note_event in note_events:
         note_offset = note_event['offset']
         note_duration = note_event['duration']
+        note_clef = note_event['clef']
+        
+        # Draw the note        
+        note_type = get_note_type(note_event['note_type'], note_event['duration'])
+        xPosition = xCumulated + ACCIDENTAL_SPACE + (note_offset / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
+        # Before drawing the note, check for the clef change. 
+        # If there is a clef change, draw the clef change symbol and adjust the x position accordingly.
+        for clefChange in clefChanges:
+            if note_offset == clefChange['startQuarter']:
+                xCumulated += X_CLEF_OFFSET
+                # Draw the clef is the clef change occurred by this hand. 
+                if clefChange['newClef']:
+                    clefChar = MUSICAL_SYMBOLS[clefChange['newClef'].name + '_clef']
+                    bbox = draw.textbbox((0, 0), clefChar, font=load_music_font(FONT_SIZES['clef']))
+                    clefY = yBottomLine - STAFF_LINE_SPACING*2 - (bbox[3] - bbox[1])/2
+                    draw.text((xPosition, clefY), clefChar, fill=(0, 0, 0), font=load_music_font(FONT_SIZES['clef']), anchor='lt')
+                    currentClef = clefChange['newClef']
+                xCumulated += clefChange['width']
+                xPosition = xCumulated + ACCIDENTAL_SPACE + (note_offset / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
         
         # Check if there's a gap before this note
         if note_offset > current_position:
@@ -1052,11 +1067,7 @@ def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: Im
             rest_x = xCumulated + ACCIDENTAL_SPACE + (current_position / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
             
             draw_rest(draw, rest_x, staff_y, rest_type, is_treble)
-        
-        # Draw the note
-        xPosition = xCumulated + ACCIDENTAL_SPACE + (note_offset / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
-        note_type = get_note_type(note_event['note_type'], note_event['duration'])        
-        actual_ys = draw_chord(draw, xPosition, note_event['pitches'], is_treble, staff_y, activeKeySignature, note_type, note_event['clef'])
+        actual_ys = draw_chord(draw, xPosition, note_event['pitches'], is_treble, staff_y, activeKeySignature, note_type, currentClef)
 
         # Store absolute score time (in quarterLength/beats). This enables optional
         # score→performance timing transfer later.
@@ -1177,20 +1188,12 @@ def draw_measure(measureGroupInfo: MeasureGroupInfo, isRightHand: bool, draw: Im
         
         draw_rest(draw, rest_x, staff_y, rest_type, is_treble)
     
-    # Create and return updated MeasureGroupInfo
-    if isRightHand:
-        updatedRightHandClef = currentClef
-        updatedLeftHandClef = measureGroupInfo.leftHandClef
-    else:
-        updatedRightHandClef = measureGroupInfo.rightHandClef
-        updatedLeftHandClef = currentClef
-    
     updatedKeySignature = currentKeySignature if currentKeySignature is not None else measureGroupInfo.keySignature
     updatedTimeSignature = currentTimeSignature if timeSignatureChanged else measureGroupInfo.timeSignature
     
-    return MeasureGroupInfo(updatedRightHandClef, updatedLeftHandClef, updatedKeySignature, updatedTimeSignature), tie_curves, active_ties, noteKeyFrames
+    return MeasureGroupInfo(updatedKeySignature, updatedTimeSignature), tie_curves, active_ties, noteKeyFrames
 
-def draw_key_signature(draw: ImageDraw.Draw, keySignatureSharps: int, xCumulated: int, yBottomLine: int, clefChar: str, opacity: int) -> int:
+def draw_key_signature(draw: ImageDraw.Draw, keySignatureSharps: int, xCumulated: int, yBottomLine: int, clefChar: str) -> int:
     font = load_music_font(FONT_SIZES['accidental'])
 
     symbolChar = '\u266F' if keySignatureSharps > 0 else '\u266D'
@@ -1216,7 +1219,7 @@ def draw_key_signature(draw: ImageDraw.Draw, keySignatureSharps: int, xCumulated
         pos = positions[i]
         
         y = yBottomLine - pos*STAFF_LINE_SPACING - (bbox[3] - bbox[1])/2 + offset
-        draw.text((xCumulated, y), symbolChar, fill=(0,0,0,opacity), font=font, anchor='lt')
+        draw.text((xCumulated, y), symbolChar, fill=(0,0,0), font=font, anchor='lt')
         xCumulated += bbox[2] - bbox[0]
         cumulatedWidth += bbox[2] - bbox[0]
         xCumulated += KEY_SIGNATURE_ACCIDENTAL_SPACING
@@ -1230,8 +1233,7 @@ def create_score_frame(
     leftHandMeasures: list[stream.Measure],
     measureGroup: dict,
     endMeasureIndex:int,
-    endMeasureTime: float,
-    opacity: int = 255) -> tuple[Image.Image, MeasureGroupInfo]:
+    endMeasureTime: float) -> tuple[Image.Image, MeasureGroupInfo]:
 
     """
     Create a score frame image.
@@ -1242,6 +1244,13 @@ def create_score_frame(
     relativePlayTimes = measureGroup["relativePlayTimes"]
     img = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT//2), color=(255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
+    # treble clef width
+    drawbbox = draw.textbbox((0,0), MUSICAL_SYMBOLS['treble_clef'], font=load_music_font(FONT_SIZES['clef']))
+    trebleClefWidth = drawbbox[2] - drawbbox[0]
+    # bass clef width
+    drawbbox = draw.textbbox((0,0), MUSICAL_SYMBOLS['bass_clef'], font=load_music_font(FONT_SIZES['clef']))
+    bassClefWidth = drawbbox[2] - drawbbox[0]
+    clefWidthDict = {"treble": trebleClefWidth, "bass": bassClefWidth}
 
     # Draw two sets of five lines for the staff
     # height 540
@@ -1254,49 +1263,41 @@ def create_score_frame(
     for i in range(5):
         lineYR = middlePoint - HANDS_SPACING_OFFSET - i*STAFF_LINE_SPACING - LINE_THICKNESS
         lineYL = middlePoint + HANDS_SPACING_OFFSET + i*STAFF_LINE_SPACING
-        draw.line([(X_MARGIN, lineYR), (VIDEO_WIDTH - X_MARGIN, lineYR)], fill=(0, 0, 0, opacity), width=LINE_THICKNESS)
-        draw.line([(X_MARGIN, lineYL), (VIDEO_WIDTH - X_MARGIN, lineYL)], fill=(0, 0, 0, opacity), width=LINE_THICKNESS)
+        draw.line([(X_MARGIN, lineYR), (VIDEO_WIDTH - X_MARGIN, lineYR)], fill=(0, 0, 0), width=LINE_THICKNESS)
+        draw.line([(X_MARGIN, lineYL), (VIDEO_WIDTH - X_MARGIN, lineYL)], fill=(0, 0, 0), width=LINE_THICKNESS)
 
     
     # Draw leftmost line
     lineYR0 = middlePoint - HANDS_SPACING_OFFSET - 4*STAFF_LINE_SPACING - LINE_THICKNESS
     lineYL4 = middlePoint + HANDS_SPACING_OFFSET + 4*STAFF_LINE_SPACING
-    draw.line([(X_MARGIN, lineYR0), (X_MARGIN, lineYL4)], fill=(0,0,0,opacity), width=LINE_THICKNESS)
+    draw.line([(X_MARGIN, lineYR0), (X_MARGIN, lineYL4)], fill=(0,0,0), width=LINE_THICKNESS)
 
     # Draw brace
     draw_brace(draw, X_MARGIN - 2, lineYR0, load_music_font(lineYL4 - lineYR0))
 
     # Draw rightmost line
-    draw.line([(VIDEO_WIDTH - X_MARGIN, lineYR0), (VIDEO_WIDTH - X_MARGIN, lineYL4)], fill=(0,0,0,opacity), width=LINE_THICKNESS)
+    draw.line([(VIDEO_WIDTH - X_MARGIN, lineYR0), (VIDEO_WIDTH - X_MARGIN, lineYL4)], fill=(0,0,0), width=LINE_THICKNESS)
     
     # Draw clef
-    trebleChar = '\U0001D11E'
-    bassChar = '\U0001D122'
     # Determine right hand clef.
-    if rightHandMeasures[startMeasureIndex].clef != None:
-        rightHandClef = rightHandMeasures[startMeasureIndex].clef
-    else:
-        rightHandClef = measureGroupInfo.rightHandClef
+    rightHandClef = rightHandMeasures[startMeasureIndex].clef if rightHandMeasures[startMeasureIndex].clef else rightHandMeasures[startMeasureIndex].getContextByClass(clef.Clef)
     if rightHandClef.name == 'treble':
-        rightHandClefChar = trebleChar
+        rightHandClefChar = MUSICAL_SYMBOLS['treble_clef']
     else:
-        rightHandClefChar = bassChar
+        rightHandClefChar = MUSICAL_SYMBOLS['bass_clef']
     bbox = draw.textbbox((0,0), rightHandClefChar, font=load_music_font(FONT_SIZES['clef']))
     xCumulated += X_CLEF_OFFSET
     trebleY = middlePoint - HANDS_SPACING_OFFSET - STAFF_LINE_SPACING*2 - (bbox[3] - bbox[1])/2
-    draw.text((xCumulated, trebleY), rightHandClefChar, fill=(0, 0, 0, opacity), font=load_music_font(FONT_SIZES['clef']), anchor='lt')
+    draw.text((xCumulated, trebleY), rightHandClefChar, fill=(0, 0, 0), font=load_music_font(FONT_SIZES['clef']), anchor='lt')
     # Determine left hand clef.
-    if leftHandMeasures[startMeasureIndex].clef != None:
-        leftHandClef = leftHandMeasures[startMeasureIndex].clef
-    else:
-        leftHandClef = measureGroupInfo.leftHandClef
+    leftHandClef = leftHandMeasures[startMeasureIndex].clef if leftHandMeasures[startMeasureIndex].clef else leftHandMeasures[startMeasureIndex].getContextByClass(clef.Clef)
     if leftHandClef.name == 'treble':
-        leftHandClefChar = trebleChar
+        leftHandClefChar = MUSICAL_SYMBOLS['treble_clef']
     else:
-        leftHandClefChar = bassChar
+        leftHandClefChar = MUSICAL_SYMBOLS['bass_clef']
     bbox = draw.textbbox((0,0), leftHandClefChar, font=load_music_font(FONT_SIZES['clef']))
     bassY = middlePoint + HANDS_SPACING_OFFSET + STAFF_LINE_SPACING*2 - (bbox[3] - bbox[1])/2
-    draw.text((xCumulated, bassY), leftHandClefChar, fill=(0, 0, 0, opacity), font=load_music_font(FONT_SIZES['clef']), anchor='lt')
+    draw.text((xCumulated, bassY), leftHandClefChar, fill=(0, 0, 0), font=load_music_font(FONT_SIZES['clef']), anchor='lt')
     xCumulated += bbox[2] - bbox[0]
 
     # Draw key signature
@@ -1305,8 +1306,8 @@ def create_score_frame(
     else:
         keySignature = measureGroupInfo.keySignature
     if keySignature.sharps != 0:
-        draw_key_signature(draw, keySignature.sharps, xCumulated, middlePoint - HANDS_SPACING_OFFSET - LINE_THICKNESS, rightHandClefChar, opacity)
-        xCumulated += draw_key_signature(draw, keySignature.sharps, xCumulated, middlePoint + HANDS_SPACING_OFFSET + STAFF_LINE_SPACING*4, leftHandClefChar, opacity)
+        draw_key_signature(draw, keySignature.sharps, xCumulated, middlePoint - HANDS_SPACING_OFFSET - LINE_THICKNESS, rightHandClefChar)
+        xCumulated += draw_key_signature(draw, keySignature.sharps, xCumulated, middlePoint + HANDS_SPACING_OFFSET + STAFF_LINE_SPACING*4, leftHandClefChar)
 
     # Draw time signature
     if rightHandMeasures[startMeasureIndex].timeSignature != None:
@@ -1322,26 +1323,26 @@ def create_score_frame(
     bboxDenom = draw.textbbox((0,0), MUSICAL_SYMBOLS[str(timeSignature.numerator)], font=timeSignatureFont)
     bboxNom = draw.textbbox((0,0), MUSICAL_SYMBOLS[str(timeSignature.denominator)], font=timeSignatureFont)
     if bboxDenom[2] - bboxDenom[0] > bboxNom[2] - bboxNom[0]:
-        draw.text((xCumulated, yDenomRight), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt') # right hand
-        draw.text((xCumulated, yDenomLeft), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt') # left hand
-        draw.text((xCumulated + (bboxDenom[2] - bboxDenom[0])//2 - (bboxNom[2] - bboxNom[0])//2, yNomRight), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated + (bboxDenom[2] - bboxDenom[0])//2 - (bboxNom[2] - bboxNom[0])//2, yNomLeft), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yDenomRight), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt') # right hand
+        draw.text((xCumulated, yDenomLeft), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt') # left hand
+        draw.text((xCumulated + (bboxDenom[2] - bboxDenom[0])//2 - (bboxNom[2] - bboxNom[0])//2, yNomRight), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated + (bboxDenom[2] - bboxDenom[0])//2 - (bboxNom[2] - bboxNom[0])//2, yNomLeft), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
         xCumulated += bboxDenom[2] - bboxDenom[0]
     elif bboxNom[2] - bboxNom[0] > bboxDenom[2] - bboxDenom[0]:
-        draw.text((xCumulated + (bboxNom[2] - bboxNom[0])//2 - (bboxDenom[2] - bboxDenom[0])//2, yDenomRight), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated + (bboxNom[2] - bboxNom[0])//2 - (bboxDenom[2] - bboxDenom[0])//2, yDenomLeft), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated, yNomRight), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated, yNomLeft), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated + (bboxNom[2] - bboxNom[0])//2 - (bboxDenom[2] - bboxDenom[0])//2, yDenomRight), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated + (bboxNom[2] - bboxNom[0])//2 - (bboxDenom[2] - bboxDenom[0])//2, yDenomLeft), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yNomRight), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yNomLeft), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
         xCumulated += bboxNom[2] - bboxNom[0]
     else:
-        draw.text((xCumulated, yDenomRight), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated, yDenomLeft), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated, yNomRight), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
-        draw.text((xCumulated, yNomLeft), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0,opacity), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yDenomRight), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yDenomLeft), MUSICAL_SYMBOLS[str(timeSignature.numerator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yNomRight), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
+        draw.text((xCumulated, yNomLeft), MUSICAL_SYMBOLS[str(timeSignature.denominator)], fill=(0,0,0), font=timeSignatureFont, anchor='lt')
         xCumulated += bboxNom[2] - bboxNom[0]
 
     # Now time to draw the notes.
-    currentMeasureGroupInfo = MeasureGroupInfo(rightHandClef, leftHandClef, keySignature, timeSignature)
+    currentMeasureGroupInfo = MeasureGroupInfo(keySignature, timeSignature)
     availableWidth = VIDEO_WIDTH - X_MARGIN - xCumulated - LINE_THICKNESS
     widthPerMeasure = (availableWidth - (endMeasureIndex - startMeasureIndex)*LINE_THICKNESS) / (endMeasureIndex - startMeasureIndex + 1)
 
@@ -1354,13 +1355,52 @@ def create_score_frame(
     
     # Track the start X of the first measure for proper tie clipping
     firstMeasureStartX = xCumulated
+    currentRightHandClef = rightHandMeasures[startMeasureIndex].clef if rightHandMeasures[startMeasureIndex].clef else rightHandMeasures[startMeasureIndex].getContextByClass(clef.Clef)
+    currentLeftHandClef = leftHandMeasures[startMeasureIndex].clef if leftHandMeasures[startMeasureIndex].clef else leftHandMeasures[startMeasureIndex].getContextByClass(clef.Clef)
     for measureIndex in range(startMeasureIndex, endMeasureIndex+1):
         isFirstMeasure = (measureIndex == startMeasureIndex)
         measureTimeSpan = endMeasureTime - (startMeasureTime + relativePlayTimes[endMeasureIndex - startMeasureIndex])
         if measureIndex < endMeasureIndex:
             measureTimeSpan = relativePlayTimes[measureIndex - startMeasureIndex + 1] - relativePlayTimes[measureIndex - startMeasureIndex]
-        rightMeasureGroupInfo, rightTieCurves, rightHandActiveTies, rightMeasureKeyFrames = draw_measure(currentMeasureGroupInfo, True, draw, rightHandMeasures[measureIndex], xCumulated, middlePoint - HANDS_SPACING_OFFSET - LINE_THICKNESS, widthPerMeasure, opacity, isFirstMeasure, rightHandActiveTies)
-        leftMeasureGroupInfo, leftTieCurves, leftHandActiveTies, leftMeasureKeyFrames = draw_measure(currentMeasureGroupInfo, False, draw, leftHandMeasures[measureIndex], xCumulated, middlePoint + HANDS_SPACING_OFFSET + STAFF_LINE_SPACING*4, widthPerMeasure, opacity, isFirstMeasure, leftHandActiveTies)
+        # Before drawing the measure, check if the clef has changed in either hand.
+        # For every clef change, mark x position where the clef change occurs, and the width of the clef. 
+        # This information should pass on to draw_measure function and notes area should avoid the space occupied by clef. 
+        rightHandClefChanges = []
+        leftHandClefChanges = []
+        rightHandMeasure = rightHandMeasures[measureIndex]
+        leftHandMeasure = leftHandMeasures[measureIndex]
+        for note in rightHandMeasure.notes:
+            noteClef = note.getContextByClass(clef.Clef)
+            if noteClef != currentRightHandClef:
+                rightHandClefChanges.append({
+                    'startQuarter': note.offset,
+                    'width': clefWidthDict[noteClef.name],
+                    "newClef": noteClef
+                })
+                leftHandClefChanges.append({
+                    'startQuarter': note.offset,
+                    'width': clefWidthDict[noteClef.name],
+                    "newClef": None
+                })
+                currentRightHandClef = noteClef
+        for note in leftHandMeasure.notes:
+            noteClef = note.getContextByClass(clef.Clef)
+            if noteClef != currentLeftHandClef:
+                leftHandClefChanges.append({
+                    'startQuarter': note.offset,
+                    'width': clefWidthDict[noteClef.name],
+                    "newClef": noteClef
+                })
+                rightHandClefChanges.append({
+                    'startQuarter': note.offset,
+                    'width': clefWidthDict[noteClef.name],
+                    "newClef": None
+                })
+                currentLeftHandClef = noteClef
+        rightHandClefChanges.sort(key=lambda x: x['startQuarter'])
+        leftHandClefChanges.sort(key=lambda x: x['startQuarter'])
+        rightMeasureGroupInfo, rightTieCurves, rightHandActiveTies, rightMeasureKeyFrames = draw_measure(currentMeasureGroupInfo, draw, rightHandMeasures[measureIndex], xCumulated, middlePoint - HANDS_SPACING_OFFSET - LINE_THICKNESS, widthPerMeasure, isFirstMeasure, rightHandActiveTies, rightHandClefChanges)
+        leftMeasureGroupInfo, leftTieCurves, leftHandActiveTies, leftMeasureKeyFrames = draw_measure(currentMeasureGroupInfo, draw, leftHandMeasures[measureIndex], xCumulated, middlePoint + HANDS_SPACING_OFFSET + STAFF_LINE_SPACING*4, widthPerMeasure, isFirstMeasure, leftHandActiveTies, leftHandClefChanges)
         # Before merging key frames remove duplicates between right and left key frames.
         i = 0; j = 0;
         while i < len(rightMeasureKeyFrames) and j < len(leftMeasureKeyFrames):
@@ -1403,9 +1443,8 @@ def create_score_frame(
         xCumulated += widthPerMeasure
         # draw bar lines
         if measureIndex != endMeasureIndex:
-            draw.line([(xCumulated, lineYR0), (xCumulated, lineYL4)], fill=(0,0,0,opacity), width=LINE_THICKNESS)
+            draw.line([(xCumulated, lineYR0), (xCumulated, lineYL4)], fill=(0,0,0), width=LINE_THICKNESS)
         xCumulated += LINE_THICKNESS
-        rightMeasureGroupInfo.leftHandClef = leftMeasureGroupInfo.leftHandClef
         currentMeasureGroupInfo = rightMeasureGroupInfo
 
     # Add last point to the key frames. 
@@ -1509,9 +1548,7 @@ def group_measures_for_frame(
     draw = ImageDraw.Draw(img)
 
     # How to determine the number of measures per frame
-    # The minimum distance between two notes should be 10 pixels. 
-    # The maximum distance between two notes should be 30 pixels. 
-    # The available width for each frame can be calculated as 
+    # The width between two notes should be at least 
     trebleSignWidthInPixels = draw.textbbox((0,0), '\U0001D11E', font=load_music_font(FONT_SIZES['clef']))[2] - draw.textbbox((0,0), '\U0001D11E', font=load_music_font(FONT_SIZES['clef']))[0]
     bassSignWidthInPixels = draw.textbbox((0,0), '\U0001D122', font=load_music_font(FONT_SIZES['clef']))[2] - draw.textbbox((0,0), '\U0001D122', font=load_music_font(FONT_SIZES['clef']))[0]
     clefWidth = max(trebleSignWidthInPixels, bassSignWidthInPixels)
@@ -1539,7 +1576,10 @@ def group_measures_for_frame(
         # Check if measures can fit into default number of measures per group.
         numberOfMeasures = DEFAULT_MEASURE_COUNT_PER_GROUP
         finished = False
+        
         while numberOfMeasures > 1 and not finished:
+            startingRightHandClef = rightHandMeasures[currentMeasureIndex].clef if rightHandMeasures[currentMeasureIndex].clef else rightHandMeasures[currentMeasureIndex].getContextByClass(clef.Clef)
+            startingLeftHandClef = leftHandMeasures[currentMeasureIndex].clef if leftHandMeasures[currentMeasureIndex].clef else leftHandMeasures[currentMeasureIndex].getContextByClass(clef.Clef)
             targetMeasureWidth = availableWidth / numberOfMeasures - LINE_THICKNESS*(numberOfMeasures - 1)
             numerator = currentNumerator
             denominator = currentDenominator
@@ -1563,21 +1603,30 @@ def group_measures_for_frame(
                     extraKeySignatureWidth = calculate_key_signature_width(draw, currentKeySignature)
 
                 # Find the smallest length note in the measure. 
+                # Also, account for the width for the clef change. 
                 biggestDenominator = denominator
+                clefChanges = 0
                 for note in rightHandMeasures[currentMeasureIndex + i].notes:
                     noteDenominator = Fraction(note.beat*0.25).denominator
                     if noteDenominator > biggestDenominator:
                         biggestDenominator = noteDenominator
+                    if note.getContextByClass(clef.Clef) != startingRightHandClef:
+                        clefChanges += 1
+                        startingRightHandClef = note.getContextByClass(clef.Clef)
                 for note in leftHandMeasures[currentMeasureIndex + i].notes:
                     noteDenominator = Fraction(note.beat*0.25).denominator
                     if noteDenominator > biggestDenominator:
                         biggestDenominator = noteDenominator
+                    if note.getContextByClass(clef.Clef) != startingLeftHandClef:
+                        clefChanges += 1
+                        startingLeftHandClef = note.getContextByClass(clef.Clef)
                 # Calculate the smallest distance counts in the measure. 
                 while biggestDenominator > denominator:
                     numerator *= 2
                     denominator *= 2
                 numberOfSpacesRequired = numerator + 1;
-                if ((targetMeasureWidth - extraKeySignatureWidth - ACCIDENTAL_SPACE) / numberOfSpacesRequired < MINIMUM_DISTANCE_BETWEEN_NOTES):
+                musicalNotationWidth = extraKeySignatureWidth + clefChanges*(clefWidth + X_CLEF_OFFSET);
+                if ((targetMeasureWidth - musicalNotationWidth - ACCIDENTAL_SPACE) / numberOfSpacesRequired < MINIMUM_DISTANCE_BETWEEN_NOTES):
                     # This measure cannot fit, reduce the number of measures per group and start over. 
                     numberOfMeasures -= 1
                     numberOfMeasuresAdjusted = True
@@ -1660,7 +1709,7 @@ def generate_movie(
     # Generate all frame images before rendering. 
     measureGroupInfo = None
     for i in range(len(measureGroups)):
-        if i == 26:
+        if i == 0:
             print(":::")
         endMeasureIndex = len(rightHandMeasures)-1 if i == len(measureGroups) - 1 else measureGroups[i+1]["startMeasureIndex"] - 1
         endMeasureTime = measureGroups[i+1]["absolutePlayTime"] if i+1 < len(measureGroups) else total_seconds
