@@ -27,7 +27,7 @@ X_CLEF_OFFSET = X_SIGN_OFFSET
 X_TIME_SIG_OFFSET = X_SIGN_OFFSET
 DEFAULT_MEASURE_COUNT_PER_GROUP = 6
 ACCIDENTAL_SPACE = 15
-MINIMUM_DISTANCE_BETWEEN_NOTES = 2 + ACCIDENTAL_SPACE
+MINIMUM_DISTANCE_BETWEEN_NOTES = 25
 GROUP_FADE_DURATION = 0.2
 FLAT_OFFSET = -6
 CHORD_STEM_X_OFFSET = -1
@@ -143,6 +143,16 @@ NOTE_HEAD_MAP = {
     'sixty-fourth': MUSICAL_SYMBOLS['notehead_black'],
     'dotted-quarter': MUSICAL_SYMBOLS['notehead_black'],
     'dotted-eighth': MUSICAL_SYMBOLS['notehead_black'],
+}
+NOTE_FLAGS_MAP = {
+    'eighth-up': '\uE240',
+    'eighth-down': '\uE241',
+    'sixteenth-up': '\uE242',
+    'sixteenth-down': '\uE243',
+    'thirty-second-up': '\uE244',
+    'thirty-second-down': '\uE245',
+    'sixty-fourth-up': '\uE246',
+    'sixty-fourth-down': '\uE247',
 }
 
 # Rest symbol mapping
@@ -469,7 +479,7 @@ def duration_to_rest_type(duration_quarters: float) -> str:
     else:
         return 'sixteenth'  # Default for very short durations
 
-def draw_rest(draw: ImageDraw.Draw, x: int, staff_y: int, rest_type: str, is_treble: bool) -> None:
+def draw_rest(draw: ImageDraw.Draw, x: int, staff_y: int, rest_type: str) -> None:
     """
     Draw a rest symbol on the staff.
     
@@ -478,7 +488,6 @@ def draw_rest(draw: ImageDraw.Draw, x: int, staff_y: int, rest_type: str, is_tre
         x: X position for the rest (center position)
         staff_y: Top Y position of the staff
         rest_type: Type of rest (e.g., 'whole', 'half', 'quarter', etc.)
-        is_treble: True for treble clef, False for bass clef
     """
     rest_font = load_music_font(FONT_SIZES['rest'])
     
@@ -528,13 +537,13 @@ def draw_ledger_lines(draw: ImageDraw.Draw, note_x: int, staff_y: int, note_widt
         # Below staff - draw ledger lines above
         for i in range(1, int(abs(staff_position))+1):
             line_y = staff_y + STAFF_LINE_SPACING*(4 + i)
-            draw.line([(note_x - 8, line_y), (note_x + note_width + 8, line_y)], 
+            draw.line([(note_x - 5, line_y), (note_x + note_width + 5, line_y)], 
                         fill=(0, 0, 0), width=LINE_THICKNESS)
     elif staff_position >= 5:
         # Above staff - draw ledger lines below
         for i in range(1, int(staff_position - 4)+1):
             line_y = staff_y - STAFF_LINE_SPACING*i
-            draw.line([(note_x - 8, line_y), (note_x + note_width + 8, line_y)], 
+            draw.line([(note_x - 5, line_y), (note_x + note_width + 5, line_y)], 
                         fill=(0, 0, 0), width=LINE_THICKNESS)
 
 def draw_tie(draw: ImageDraw.Draw, startAnchor: Tuple[int, int], endAnchor: Tuple[int, int], xLimitStart: int, xLimitEnd: int, curveDown: bool = False) -> None:
@@ -645,6 +654,7 @@ def draw_note(draw: ImageDraw.Draw, x: int, pitch: pitch.Pitch, note_type: str,
         key_sig: Current key signature tuple or None
     """
     note_font = load_music_font(FONT_SIZES['noteWithStem'])
+    note_head_font = load_music_font(FONT_SIZES['noteWithoutStem'])
     accidental_font = load_music_font(FONT_SIZES['accidental'])
     
     # Calculate staff position
@@ -685,17 +695,47 @@ def draw_note(draw: ImageDraw.Draw, x: int, pitch: pitch.Pitch, note_type: str,
         note_y = actual_y - note_height/2
         draw.text((note_x, note_y), note_char, fill=(0, 0, 0), font=note_font, anchor='lt')
     elif stem_up:
-        note_y = actual_y - note_height + STAFF_LINE_SPACING/2
-        draw.text((note_x, note_y), note_char, fill=(0, 0, 0), font=note_font, anchor='lt')
+        if staff_position < -1:
+            # draw lines from the notehead to the staff line. 
+            note_head_char = NOTE_HEAD_MAP.get(note_type_clean, MUSICAL_SYMBOLS['notehead_black'])
+            note_bbox = draw.textbbox((0, 0), note_head_char, font=note_head_font)
+            note_head_width = note_bbox[2] - note_bbox[0]
+            note_head_height = note_bbox[3] - note_bbox[1]
+            note_y = actual_y - note_head_height/2
+            draw.text((note_x, note_y), note_head_char, fill=(0, 0, 0), font=note_head_font, anchor='lt')
+            draw.line([(note_x+note_head_width-1, actual_y), (note_x+note_head_width-1, staff_y + STAFF_LINE_SPACING*2)], fill=(0, 0, 0), width=2) # Draw to the middle line of the staff. 
+            if  'half' not in note_type_clean and 'quarter' not in note_type_clean:
+                note_flag_char = NOTE_FLAGS_MAP[note_type_clean + '-up']
+                note_bbox = draw.textbbox((0, 0), note_flag_char, font=note_font)
+                note_flag_height = note_bbox[3] - note_bbox[1]
+                draw.text((note_x+note_head_width-1, staff_y + STAFF_LINE_SPACING*2), note_flag_char, fill=(0, 0, 0), font=note_font, anchor='lt')
+        else:
+            note_y = actual_y - note_height + STAFF_LINE_SPACING/2
+            draw.text((note_x, note_y), note_char, fill=(0, 0, 0), font=note_font, anchor='lt')
     else:
-        note_char_down = NOTE_DOWN_MAP.get(note_type_clean, MUSICAL_SYMBOLS['quarter_note_down'])
-        note_bbox = draw.textbbox((0, 0), note_char_down, font=note_font)
-        note_width = note_bbox[2] - note_bbox[0]
-        note_char_nonstem = NOTE_HEAD_MAP.get(note_type_clean, MUSICAL_SYMBOLS['notehead_black'])
-        note_bbox = draw.textbbox((0, 0), note_char_nonstem, font=note_font)
-        note_head_height = note_bbox[3] - note_bbox[1]
-        note_y = actual_y - note_head_height/2
-        draw.text((note_x, note_y), note_char_down, fill=(0, 0, 0), font=note_font, anchor='lt')
+        if staff_position > 5:
+            # draw lines from the notehead to the staff line. 
+            note_head_char = NOTE_HEAD_MAP.get(note_type_clean, MUSICAL_SYMBOLS['notehead_black'])
+            note_bbox = draw.textbbox((0, 0), note_head_char, font=note_head_font)
+            note_head_height = note_bbox[3] - note_bbox[1]
+            note_y = actual_y - note_head_height/2
+            draw.text((note_x, note_y), note_head_char, fill=(0, 0, 0), font=note_head_font, anchor='lt')
+            draw.line([(note_x+1, actual_y), (note_x+1, staff_y + STAFF_LINE_SPACING*2)], fill=(0, 0, 0), width=2) # Draw to the middle line of the staff. 
+            if  'half' not in note_type_clean and 'quarter' not in note_type_clean:
+                note_flag_char = NOTE_FLAGS_MAP[note_type_clean + '-down']
+                note_bbox = draw.textbbox((0, 0), note_flag_char, font=note_font)
+                note_flag_height = note_bbox[3] - note_bbox[1]
+                draw.text((note_x+1, staff_y + STAFF_LINE_SPACING*2 - note_flag_height), note_flag_char, fill=(0, 0, 0), font=note_font, anchor='lt')
+        else:
+            # draw the note with head
+            note_char_down = NOTE_DOWN_MAP.get(note_type_clean, MUSICAL_SYMBOLS['quarter_note_down'])
+            note_bbox = draw.textbbox((0, 0), note_char_down, font=note_font)
+            note_width = note_bbox[2] - note_bbox[0]
+            note_char_nonstem = NOTE_HEAD_MAP.get(note_type_clean, MUSICAL_SYMBOLS['notehead_black'])
+            note_bbox = draw.textbbox((0, 0), note_char_nonstem, font=note_font)
+            note_head_height = note_bbox[3] - note_bbox[1]
+            note_y = actual_y - note_head_height/2
+            draw.text((note_x, note_y), note_char_down, fill=(0, 0, 0), font=note_font, anchor='lt')
 
     # Draw augmentation dot if note is dotted
     if is_dotted(note_type_clean):
@@ -712,11 +752,11 @@ def draw_note(draw: ImageDraw.Draw, x: int, pitch: pitch.Pitch, note_type: str,
         draw_augmentation_dot(draw, dot_x, dot_y, note_font)
     
     # Draw ledger lines for notes outside the staff
-    draw_ledger_lines(draw, note_x, staff_y, note_width, staff_position)
+    draw_ledger_lines(draw, note_x, staff_y, 18, staff_position)
 
     return actual_y
 
-def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List, is_treble: bool, 
+def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List, 
                staff_y: int, keySignature: key.KeySignature, noteType: str, clef: clef.Clef) -> None:
     """
     Draw a chord (stacked notes) with proper engraving rules.
@@ -733,6 +773,7 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List, is_treble: bool,
     if not pitches:
         return []
     
+    is_treble = clef.name == 'treble'
     if len(pitches) == 1:
         # Single note - use regular drawing
         actual_y = draw_note(draw, x, pitches[0], noteType, is_treble, staff_y, keySignature)
@@ -971,6 +1012,9 @@ def draw_measure(
     # Draw notes in the measure
     # Use the current (possibly updated) clef and key signature for drawing notes
     activeClef = currentClef
+    noteHeadFont = load_music_font(FONT_SIZES['noteWithoutStem'])
+    bbox = draw.textbbox((0, 0), MUSICAL_SYMBOLS['notehead_black'], font=noteHeadFont)
+    noteHeadWidth = bbox[2] - bbox[0]
     activeKeySignature = currentKeySignature if keySignatureChanged else measureGroupInfo.keySignature
     
     # Calculate measure duration in quarter notes
@@ -1029,10 +1073,7 @@ def draw_measure(
         active_ties = active_ties.copy()
     tie_curves = []  # List of tie curves to draw: {'start': (x, y), 'end': (x, y), 'curveDown': bool, 'xLimitStart': int, 'xLimitEnd': int}
     
-    totalClefWidthChanges = 0
-    for clefChange in clefChanges:
-        totalClefWidthChanges += clefChange['width'] + X_CLEF_OFFSET
-    availableWidth = widthPerMeasure - changedSymbolsWidth - totalClefWidthChanges
+    availableWidth = widthPerMeasure - changedSymbolsWidth
     noteKeyFrames = []
     for note_event in note_events:
         note_offset = note_event['offset']
@@ -1045,7 +1086,7 @@ def draw_measure(
         # Before drawing the note, check for the clef change. 
         # If there is a clef change, draw the clef change symbol and adjust the x position accordingly.
         for clefChange in clefChanges:
-            if note_offset == clefChange['startQuarter']:
+            if current_position == clefChange['startQuarter']:
                 xCumulated += X_CLEF_OFFSET
                 # Draw the clef is the clef change occurred by this hand. 
                 if clefChange['newClef']:
@@ -1066,8 +1107,8 @@ def draw_measure(
             # Calculate x position for the rest (centered in the gap)
             rest_x = xCumulated + ACCIDENTAL_SPACE + (current_position / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
             
-            draw_rest(draw, rest_x, staff_y, rest_type, is_treble)
-        actual_ys = draw_chord(draw, xPosition, note_event['pitches'], is_treble, staff_y, activeKeySignature, note_type, currentClef)
+            draw_rest(draw, rest_x, staff_y, rest_type)
+        actual_ys = draw_chord(draw, xPosition, note_event['pitches'], staff_y, activeKeySignature, note_type, currentClef)
 
         # Store absolute score time (in quarterLength/beats). This enables optional
         # score→performance timing transfer later.
@@ -1116,7 +1157,7 @@ def draw_measure(
                     # The start_x might be in a previous measure, so we need to find the measure start
                     # For now, use the current measure start, but we'll adjust this when drawing
                     tie_curves.append({
-                        'start': (tie_info['start_x'], tie_info['start_y']),
+                        'start': (tie_info['start_x'] + noteHeadWidth, tie_info['start_y']),
                         'end': (xPosition, pitch_y),
                         'curveDown': tie_info['is_bottom_note'],
                         'xLimitStart': min(tie_info['start_x'], xCumulated),  # Include previous measure if needed
@@ -1150,7 +1191,7 @@ def draw_measure(
                 if pitch_key in active_ties:
                     tie_info = active_ties[pitch_key]
                     tie_curves.append({
-                        'start': (tie_info['start_x'], tie_info['start_y']),
+                        'start': (tie_info['start_x'] + noteHeadWidth, tie_info['start_y']),
                         'end': (xPosition, pitch_y),
                         'curveDown': tie_info['is_bottom_note'],
                         'xLimitStart': xCumulated,
@@ -1186,7 +1227,7 @@ def draw_measure(
         else:
             rest_x = xCumulated + ACCIDENTAL_SPACE + (current_position / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
         
-        draw_rest(draw, rest_x, staff_y, rest_type, is_treble)
+        draw_rest(draw, rest_x, staff_y, rest_type)
     
     updatedKeySignature = currentKeySignature if currentKeySignature is not None else measureGroupInfo.keySignature
     updatedTimeSignature = currentTimeSignature if timeSignatureChanged else measureGroupInfo.timeSignature
@@ -1250,6 +1291,7 @@ def create_score_frame(
     # bass clef width
     drawbbox = draw.textbbox((0,0), MUSICAL_SYMBOLS['bass_clef'], font=load_music_font(FONT_SIZES['clef']))
     bassClefWidth = drawbbox[2] - drawbbox[0]
+    clefWidth = max(trebleClefWidth, bassClefWidth)
     clefWidthDict = {"treble": trebleClefWidth, "bass": bassClefWidth}
 
     # Draw two sets of five lines for the staff
@@ -1344,24 +1386,14 @@ def create_score_frame(
     # Now time to draw the notes.
     currentMeasureGroupInfo = MeasureGroupInfo(keySignature, timeSignature)
     availableWidth = VIDEO_WIDTH - X_MARGIN - xCumulated - LINE_THICKNESS
-    widthPerMeasure = (availableWidth - (endMeasureIndex - startMeasureIndex)*LINE_THICKNESS) / (endMeasureIndex - startMeasureIndex + 1)
-
-    # Collect all tie curves from all measures
-    all_tie_curves = []
-    
-    # Track active ties separately for right and left hand across measures in the same group
-    rightHandActiveTies = {}
-    leftHandActiveTies = {}
-    
-    # Track the start X of the first measure for proper tie clipping
-    firstMeasureStartX = xCumulated
+    # Width per measure maybe different due to in-measure clef changes. 
+    # Calculate the final width per measure accounting for the in-measure clef changes.
     currentRightHandClef = rightHandMeasures[startMeasureIndex].clef if rightHandMeasures[startMeasureIndex].clef else rightHandMeasures[startMeasureIndex].getContextByClass(clef.Clef)
     currentLeftHandClef = leftHandMeasures[startMeasureIndex].clef if leftHandMeasures[startMeasureIndex].clef else leftHandMeasures[startMeasureIndex].getContextByClass(clef.Clef)
+    rightHandClefChangesList = []
+    leftHandClefChangesList = []
+    totalInMeasureClefChanges = 0
     for measureIndex in range(startMeasureIndex, endMeasureIndex+1):
-        isFirstMeasure = (measureIndex == startMeasureIndex)
-        measureTimeSpan = endMeasureTime - (startMeasureTime + relativePlayTimes[endMeasureIndex - startMeasureIndex])
-        if measureIndex < endMeasureIndex:
-            measureTimeSpan = relativePlayTimes[measureIndex - startMeasureIndex + 1] - relativePlayTimes[measureIndex - startMeasureIndex]
         # Before drawing the measure, check if the clef has changed in either hand.
         # For every clef change, mark x position where the clef change occurs, and the width of the clef. 
         # This information should pass on to draw_measure function and notes area should avoid the space occupied by clef. 
@@ -1399,6 +1431,30 @@ def create_score_frame(
                 currentLeftHandClef = noteClef
         rightHandClefChanges.sort(key=lambda x: x['startQuarter'])
         leftHandClefChanges.sort(key=lambda x: x['startQuarter'])
+        rightHandClefChangesList.append(rightHandClefChanges)
+        leftHandClefChangesList.append(leftHandClefChanges)
+        totalInMeasureClefChanges += len(rightHandClefChanges)
+    widthPerMeasure = (availableWidth - (endMeasureIndex - startMeasureIndex)*LINE_THICKNESS - totalInMeasureClefChanges*(clefWidth + X_CLEF_OFFSET)) / (endMeasureIndex - startMeasureIndex + 1)
+
+    # Collect all tie curves from all measures
+    all_tie_curves = []
+    
+    # Track active ties separately for right and left hand across measures in the same group
+    rightHandActiveTies = {}
+    leftHandActiveTies = {}
+    
+    # Track the start X of the first measure for proper tie clipping
+    firstMeasureStartX = xCumulated
+    for measureIndex in range(startMeasureIndex, endMeasureIndex+1):
+        isFirstMeasure = (measureIndex == startMeasureIndex)
+        measureTimeSpan = endMeasureTime - (startMeasureTime + relativePlayTimes[endMeasureIndex - startMeasureIndex])
+        if measureIndex < endMeasureIndex:
+            measureTimeSpan = relativePlayTimes[measureIndex - startMeasureIndex + 1] - relativePlayTimes[measureIndex - startMeasureIndex]
+        # Before drawing the measure, check if the clef has changed in either hand.
+        # For every clef change, mark x position where the clef change occurs, and the width of the clef. 
+        # This information should pass on to draw_measure function and notes area should avoid the space occupied by clef. 
+        rightHandClefChanges = rightHandClefChangesList[measureIndex - startMeasureIndex]
+        leftHandClefChanges = leftHandClefChangesList[measureIndex - startMeasureIndex]
         rightMeasureGroupInfo, rightTieCurves, rightHandActiveTies, rightMeasureKeyFrames = draw_measure(currentMeasureGroupInfo, draw, rightHandMeasures[measureIndex], xCumulated, middlePoint - HANDS_SPACING_OFFSET - LINE_THICKNESS, widthPerMeasure, isFirstMeasure, rightHandActiveTies, rightHandClefChanges)
         leftMeasureGroupInfo, leftTieCurves, leftHandActiveTies, leftMeasureKeyFrames = draw_measure(currentMeasureGroupInfo, draw, leftHandMeasures[measureIndex], xCumulated, middlePoint + HANDS_SPACING_OFFSET + STAFF_LINE_SPACING*4, widthPerMeasure, isFirstMeasure, leftHandActiveTies, leftHandClefChanges)
         # Before merging key frames remove duplicates between right and left key frames.
@@ -1440,7 +1496,7 @@ def create_score_frame(
         all_tie_curves.extend(rightTieCurves)
         all_tie_curves.extend(leftTieCurves)
         
-        xCumulated += widthPerMeasure
+        xCumulated += widthPerMeasure + len(rightHandClefChanges)*(clefWidth + X_CLEF_OFFSET)
         # draw bar lines
         if measureIndex != endMeasureIndex:
             draw.line([(xCumulated, lineYR0), (xCumulated, lineYL4)], fill=(0,0,0), width=LINE_THICKNESS)
@@ -1464,9 +1520,11 @@ def create_score_frame(
     tieEndX = lastMeasureEndX - TIE_END_MARGIN
     
     # Handle right hand active ties
+    bbox = draw.textbbox((0, 0), MUSICAL_SYMBOLS['notehead_black'], font=load_music_font(FONT_SIZES['noteWithoutStem']))
+    noteHeadWidth = bbox[2] - bbox[0]
     for pitch_key, tie_info in rightHandActiveTies.items():
         all_tie_curves.append({
-            'start': (tie_info['start_x'], tie_info['start_y']),
+            'start': (tie_info['start_x'] + noteHeadWidth, tie_info['start_y']),
             'end': (tieEndX, tie_info['start_y']),  # Use same Y as start (same pitch)
             'curveDown': tie_info['is_bottom_note'],
             'xLimitStart': firstMeasureStartX,
@@ -1476,7 +1534,7 @@ def create_score_frame(
     # Handle left hand active ties
     for pitch_key, tie_info in leftHandActiveTies.items():
         all_tie_curves.append({
-            'start': (tie_info['start_x'], tie_info['start_y']),
+            'start': (tie_info['start_x'] + noteHeadWidth, tie_info['start_y']),
             'end': (tieEndX, tie_info['start_y']),  # Use same Y as start (same pitch)
             'curveDown': tie_info['is_bottom_note'],
             'xLimitStart': firstMeasureStartX,
@@ -1580,7 +1638,28 @@ def group_measures_for_frame(
         while numberOfMeasures > 1 and not finished:
             startingRightHandClef = rightHandMeasures[currentMeasureIndex].clef if rightHandMeasures[currentMeasureIndex].clef else rightHandMeasures[currentMeasureIndex].getContextByClass(clef.Clef)
             startingLeftHandClef = leftHandMeasures[currentMeasureIndex].clef if leftHandMeasures[currentMeasureIndex].clef else leftHandMeasures[currentMeasureIndex].getContextByClass(clef.Clef)
-            targetMeasureWidth = availableWidth / numberOfMeasures - LINE_THICKNESS*(numberOfMeasures - 1)
+            
+            # Count all the in measure clef changes width, and subtract them from the available width.
+            # Use a set to track unique clef change positions (measure_index, beat_offset)
+            # so that simultaneous clef changes in both hands count as one
+            clefChangePositions = set()
+            for i in range(numberOfMeasures):
+                if currentMeasureIndex + i >= len(rightHandMeasures):
+                    break
+                for note in rightHandMeasures[currentMeasureIndex + i].notes:
+                    if note.getContextByClass(clef.Clef) != startingRightHandClef:
+                        # Track clef change by position (measure index, beat offset)
+                        clefChangePositions.add((currentMeasureIndex + i, note.beat))
+                        startingRightHandClef = note.getContextByClass(clef.Clef)
+                for note in leftHandMeasures[currentMeasureIndex + i].notes:
+                    if note.getContextByClass(clef.Clef) != startingLeftHandClef:
+                        # Track clef change by position (measure index, beat offset)
+                        # If same position already exists from right hand, it won't be added again
+                        clefChangePositions.add((currentMeasureIndex + i, note.beat))
+                        startingLeftHandClef = note.getContextByClass(clef.Clef)
+            clefChanges = len(clefChangePositions)
+
+            targetMeasureWidth = (availableWidth - clefChanges*(clefWidth + X_CLEF_OFFSET)) / numberOfMeasures - LINE_THICKNESS*(numberOfMeasures - 1)
             numerator = currentNumerator
             denominator = currentDenominator
             currentKeySignature = keySignature
@@ -1602,24 +1681,17 @@ def group_measures_for_frame(
                     currentKeySignature = rightHandMeasures[currentMeasureIndex + i].keySignature
                     extraKeySignatureWidth = calculate_key_signature_width(draw, currentKeySignature)
 
-                # Find the smallest length note in the measure. 
-                # Also, account for the width for the clef change. 
+                # Find the smallest length note in the measure.
                 biggestDenominator = denominator
-                clefChanges = 0
                 for note in rightHandMeasures[currentMeasureIndex + i].notes:
                     noteDenominator = Fraction(note.beat*0.25).denominator
                     if noteDenominator > biggestDenominator:
                         biggestDenominator = noteDenominator
-                    if note.getContextByClass(clef.Clef) != startingRightHandClef:
-                        clefChanges += 1
-                        startingRightHandClef = note.getContextByClass(clef.Clef)
                 for note in leftHandMeasures[currentMeasureIndex + i].notes:
                     noteDenominator = Fraction(note.beat*0.25).denominator
                     if noteDenominator > biggestDenominator:
                         biggestDenominator = noteDenominator
-                    if note.getContextByClass(clef.Clef) != startingLeftHandClef:
-                        clefChanges += 1
-                        startingLeftHandClef = note.getContextByClass(clef.Clef)
+                
                 # Calculate the smallest distance counts in the measure. 
                 while biggestDenominator > denominator:
                     numerator *= 2
