@@ -4,7 +4,7 @@ Score to Movie Converter
 Converts music21 Score objects to moving score visualizations.
 """
 
-from music21 import stream, tempo, key, clef, pitch, spanner
+from music21 import stream, tempo, key, clef, pitch, spanner, expressions
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import VideoClip
 from fractions import Fraction
@@ -93,6 +93,13 @@ MUSICAL_SYMBOLS = {
 
     'augmentation_dot': '\uE1E7',
     'brace': '\uE000',
+    
+    # Tremolo strokes (SMuFL)
+    'tremolo_1': '\uE220',  # 1 stroke (8th notes)
+    'tremolo_2': '\uE221',  # 2 strokes (16th notes)
+    'tremolo_3': '\uE222',  # 3 strokes (32nd notes)
+    'tremolo_4': '\uE223',  # 4 strokes (64th notes)
+    'tremolo_5': '\uE224',  # 5 strokes (128th notes)
 
     # Time Signatures
     '2': '\uE082',
@@ -638,6 +645,84 @@ def draw_tie(draw: ImageDraw.Draw, startAnchor: Tuple[int, int], endAnchor: Tupl
         draw.polygon(polygonPoints, fill=(0, 0, 0))
 
 
+def draw_tremolo_beams(draw: ImageDraw.Draw, x1: int, y1: int, x2: int, y2: int, 
+                       num_beams: int, stem_up: bool) -> None:
+    """
+    Draw tremolo beams (diagonal strokes) between two notes.
+    
+    Args:
+        draw: PIL ImageDraw object
+        x1: X position of first note's stem
+        y1: Y position of first note (notehead center)
+        x2: X position of second note's stem  
+        y2: Y position of second note (notehead center)
+        num_beams: Number of tremolo beams/strokes (1-5)
+        stem_up: True if stems point up, False if down
+    """
+    if num_beams < 1:
+        return
+    
+    num_beams = min(num_beams, 5)
+    
+    # Calculate the center point between the two notes
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    
+    # Beam dimensions
+    beam_width = min(40, abs(x2 - x1) * 0.4)  # Width of each beam stroke
+    beam_height = 4  # Height/thickness of each beam
+    beam_spacing = 8  # Vertical spacing between beams
+    
+    # Calculate the angle of the beams (slanted)
+    # Standard tremolo beams are slanted at about 45 degrees
+    slant_angle = math.radians(30)  # 30 degree slant
+    
+    # Total height of all beams
+    total_beam_height = num_beams * beam_height + (num_beams - 1) * beam_spacing
+    
+    # Starting y offset (center the beam group)
+    start_y_offset = -total_beam_height / 2
+    
+    for i in range(num_beams):
+        # Y offset for this beam
+        y_offset = start_y_offset + i * (beam_height + beam_spacing) + beam_height / 2
+        
+        # Calculate beam endpoints with slant
+        half_width = beam_width / 2
+        
+        # Left point of beam
+        left_x = center_x - half_width
+        left_y = center_y + y_offset + half_width * math.tan(slant_angle)
+        
+        # Right point of beam
+        right_x = center_x + half_width
+        right_y = center_y + y_offset - half_width * math.tan(slant_angle)
+        
+        # Draw the beam as a thick line (parallelogram)
+        # Create polygon for beam with thickness
+        half_thickness = beam_height / 2
+        
+        # Calculate perpendicular offset for thickness
+        dx = right_x - left_x
+        dy = right_y - left_y
+        length = math.sqrt(dx * dx + dy * dy)
+        if length > 0:
+            perp_x = -dy / length * half_thickness
+            perp_y = dx / length * half_thickness
+        else:
+            perp_x, perp_y = 0, half_thickness
+        
+        # Four corners of the beam parallelogram
+        points = [
+            (left_x + perp_x, left_y + perp_y),
+            (right_x + perp_x, right_y + perp_y),
+            (right_x - perp_x, right_y - perp_y),
+            (left_x - perp_x, left_y - perp_y),
+        ]
+        
+        draw.polygon(points, fill=(0, 0, 0))
+
+
 def draw_note(draw: ImageDraw.Draw, x: int, pitch: pitch.Pitch, note_type: str, 
               is_treble: bool, staff_y: int, keySignature: key.KeySignature) -> None:
     """
@@ -921,10 +1006,15 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List,
 
     return actual_ys
 
-def get_note_type(note_type: str, duration: float) -> str:
+def get_note_type(note_type: str, duration: float, dots: int = 0) -> str:
     """
-    Get the note type based on the note type and duration.
+    Get the note type based on the note type, duration, and dots.
     """
+    # If dots is specified, use it directly
+    if dots > 0:
+        return f'dotted-{note_type}'
+    
+    # Fallback: infer dots from duration
     if note_type == 'half' and duration == 3.0:
         return 'dotted-half'
     elif note_type == 'quarter' and duration == 1.5:
@@ -1023,6 +1113,8 @@ def draw_measure(
     # Collect all notes with their offsets and durations
     note_events = []
     for note in measure.notes:
+        if any(isinstance(e, expressions.Tremolo) for e in note.expressions):
+            print("Tremolo...")
         # Handle single notes and chords
         if hasattr(note, 'pitch'):
             # Single note
@@ -1047,13 +1139,33 @@ def draw_measure(
         else:
             # Skip if no pitch information
             continue
+        
+        # Check for TremoloSpanner
+        tremolo_info = None
+        spanners = note.getSpannerSites()
+        for sp in spanners:
+            if isinstance(sp, expressions.TremoloSpanner):
+                # Get the other note in the tremolo pair
+                spanned_elements = sp.getSpannedElements()
+                other_notes = [e for e in spanned_elements if e != note]
+                is_first = spanned_elements[0] == note if spanned_elements else True
+                tremolo_info = {
+                    'num_beams': sp.numberOfMarks,
+                    'is_first': is_first,
+                    'other_note': other_notes[0] if other_notes else None,
+                    'spanner_id': id(sp)  # Use spanner id to match pairs
+                }
+                break
+        
         note_events.append({
             'offset': note.offset,
             'duration': note.duration.quarterLength,
             'pitches': pitches,
             'note_type': note.duration.type,
+            'dots': note.duration.dots,  # Number of dots for dotted notes
             'pitch_ties': pitch_ties,  # Dictionary mapping pitch.midi to tie object
-            'clef': note.getContextByClass(clef.Clef)
+            'clef': note.getContextByClass(clef.Clef),
+            'tremolo': tremolo_info  # Tremolo spanner info if present
         })
     
     # Sort notes by offset
@@ -1075,13 +1187,18 @@ def draw_measure(
     
     availableWidth = widthPerMeasure - changedSymbolsWidth
     noteKeyFrames = []
+    
+    # Track tremolo pairs for drawing beams after both notes are rendered
+    # Key: spanner_id, Value: {'x': x_position, 'y': y_position (avg of chord), 'num_beams': int, 'stem_up': bool}
+    tremolo_first_notes = {}
+    
     for note_event in note_events:
         note_offset = note_event['offset']
         note_duration = note_event['duration']
         note_clef = note_event['clef']
         
         # Draw the note        
-        note_type = get_note_type(note_event['note_type'], note_event['duration'])
+        note_type = get_note_type(note_event['note_type'], note_event['duration'], note_event.get('dots', 0))
         xPosition = xCumulated + ACCIDENTAL_SPACE + (note_offset / measureDuration) * (availableWidth - ACCIDENTAL_SPACE)
         # Before drawing the note, check for the clef change. 
         # If there is a clef change, draw the clef change symbol and adjust the x position accordingly.
@@ -1118,6 +1235,42 @@ def draw_measure(
             "y_middles": actual_ys,
             "score_quarter": float(measure.offset + note_offset),
         })
+        
+        # Handle tremolo beams
+        tremolo_info = note_event.get('tremolo')
+        if tremolo_info:
+            # Calculate average Y position for the note/chord
+            avg_y = sum(actual_ys) / len(actual_ys) if actual_ys else staff_y
+            
+            # Determine stem direction based on average staff position
+            sorted_pitches = sorted(note_event['pitches'], key=lambda p: p.midi)
+            avg_staff_pos = sum(midi_to_staff_position(p.step, p.octave, is_treble) for p in sorted_pitches) / len(sorted_pitches)
+            stem_up = avg_staff_pos <= 2.0  # Middle line position
+            
+            spanner_id = tremolo_info['spanner_id']
+            
+            if tremolo_info['is_first']:
+                # First note of tremolo pair - store position for later
+                tremolo_first_notes[spanner_id] = {
+                    'x': xPosition,
+                    'y': avg_y,
+                    'num_beams': tremolo_info['num_beams'],
+                    'stem_up': stem_up
+                }
+            else:
+                # Second note of tremolo pair - draw the beams
+                if spanner_id in tremolo_first_notes:
+                    first_note_info = tremolo_first_notes[spanner_id]
+                    draw_tremolo_beams(
+                        draw,
+                        first_note_info['x'] + noteHeadWidth,  # x1 - right side of first notehead
+                        first_note_info['y'],
+                        xPosition,  # x2 - left side of second notehead
+                        avg_y,
+                        first_note_info['num_beams'],
+                        first_note_info['stem_up']
+                    )
+                    del tremolo_first_notes[spanner_id]
         
         # Handle ties for each pitch in the note/chord
         sorted_pitches = sorted(note_event['pitches'], key=lambda p: p.midi)
@@ -1781,7 +1934,7 @@ def generate_movie(
     # Generate all frame images before rendering. 
     measureGroupInfo = None
     for i in range(len(measureGroups)):
-        if i == 0:
+        if i == 45:
             print(":::")
         endMeasureIndex = len(rightHandMeasures)-1 if i == len(measureGroups) - 1 else measureGroups[i+1]["startMeasureIndex"] - 1
         endMeasureTime = measureGroups[i+1]["absolutePlayTime"] if i+1 < len(measureGroups) else total_seconds

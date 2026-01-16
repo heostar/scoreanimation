@@ -52,7 +52,7 @@ def main(score_file_path: str, performance_midi_path: str | None = None, score_m
         # print(f"Video created successfully: {output_path}")
 
         score = converter.parse(score_file_path)
-        score.makeNotation(inPlace=True)
+        # score.makeNotation(inPlace=True)
         output_path = os.path.splitext(score_file_path)[0] + ".mp4"
         generate_movie(
             score,
