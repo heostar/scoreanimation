@@ -27,10 +27,10 @@ X_CLEF_OFFSET = X_SIGN_OFFSET
 X_TIME_SIG_OFFSET = X_SIGN_OFFSET
 DEFAULT_MEASURE_COUNT_PER_GROUP = 6
 ACCIDENTAL_SPACE = 15
-MINIMUM_DISTANCE_BETWEEN_NOTES = 25
+MINIMUM_DISTANCE_BETWEEN_NOTES = 40
 GROUP_FADE_DURATION = 0.2
 FLAT_OFFSET = -6
-CHORD_STEM_X_OFFSET = -1
+CHORD_STEM_X_OFFSET = -2
 TIE_END_MARGIN = 5  # Margin in pixels from measure end for ties that continue beyond the measure group
 SPARKLE_ANIMATION_DURATION = 0.5
 
@@ -915,11 +915,15 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List,
     # Calculate notehead offsets for seconds (notes a second apart)
     # Notes a second apart (1 semitone = 0.5 staff positions) need horizontal offset
     notehead_offsets = [0] * len(noteList)
+    stem_note_i = None
     for i in range(len(noteList) - 1):
         pos_diff = abs(noteList[i+1]['staff_pos'] - noteList[i]['staff_pos'])
         if pos_diff <= 0.5:  # Second apart or less
             # Offset the higher note to the right
             notehead_offsets[i+1] = noneStemNoteW - 1 # Small horizontal offset
+            if stem_up == False and i == 0:
+                stem_note_i = 1 # When the stem is downward and two notes are half step apart, the second note is the stem note.
+
     
     # Draw accidentals first (left to right, staggered vertically)
     # Use consistent accidental width (same as single notes: 20 pixels)
@@ -936,7 +940,9 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List,
         noteX = baseNoteX + notehead_offsets[i]
         # Need to decide if this note is the stem or not.
         isStemNote = False
-        if stem_up:# and i == len(noteList) - 1:
+        if stem_note_i is not None:
+            isStemNote = i == stem_note_i
+        elif stem_up:# and i == len(noteList) - 1:
             if len(noteList) == 2 and i == 0 and noteList[1]['staff_pos'] - noteList[0]['staff_pos'] == 0.5:
                 isStemNote = True
             elif i == len(noteList) - 1 and noteList[1]['staff_pos'] - noteList[0]['staff_pos'] > 0.5:
@@ -972,8 +978,12 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List,
             # Place stem on the right side
             stemX = x + noneStemNoteW + CHORD_STEM_X_OFFSET
         else:
-            # Place stem on the left side
-            stemX = x - CHORD_STEM_X_OFFSET
+            if stem_note_i is not None:
+                # When the stem is downward and two notes are half step apart, the second note is the stem note.
+                # Therefore, the stem should be placed on the right side of the first note.
+                stemX = x + noneStemNoteW + CHORD_STEM_X_OFFSET
+            else:
+                stemX = x - CHORD_STEM_X_OFFSET
         
         # Draw stem line
         draw.line([(stemX, stemStartY), (stemX, stemEndY)], 
