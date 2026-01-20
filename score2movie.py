@@ -8,7 +8,10 @@ from music21 import stream, tempo, key, clef, pitch, spanner, expressions
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import VideoClip
 from fractions import Fraction
-from typing import Optional, List, Tuple
+from typing import List, Tuple
+from enum import Enum
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 import numpy as np
 import math
@@ -16,6 +19,13 @@ import random
 import sys
 
 DEBUG_MODE = False
+
+
+class VideoType(Enum):
+    """Enum for different video rendering modes."""
+    TWO_LINE_ALTERNATING = "two_line_alternating"  # Two score frames, alternating top/bottom
+    TWO_LINE_SEQUENTIAL = "two_line_sequential"    # Two score frames, sequential display
+    # SINGLE_LINE_MOVING = "single_line_moving"    # Single line with moving score (to be implemented)
 
 # Constants
 VIDEO_WIDTH = 1920
@@ -1931,10 +1941,389 @@ def draw_playhead(draw: ImageDraw.Draw, x: int, y: int, opacity: int) -> None:
     playHeadHeight = 2*HANDS_SPACING_OFFSET + 8*STAFF_LINE_SPACING
     draw.rectangle([(x, y), (x + PLAYHEAD_WIDTH, y + playHeadHeight)], fill=(PLAYHEAD_COLOR[0], PLAYHEAD_COLOR[1], PLAYHEAD_COLOR[2], opacity))
 
+
+@dataclass
+class TwoLineRenderContext:
+    """Context for two-line score frame rendering."""
+    frame_images: List[Image.Image]
+    measure_groups: List[dict]
+    total_seconds: float
+    current_group_index: List[int]  # Mutable reference for stateful tracking
+    current_group_side: List[str]   # 'top' or 'bottom'
+    sparkle_animation_list: List[dict]
+    last_added_sparkle_time: List[float]
+
+
+class TwoLineFrameRenderer(ABC):
+    """Abstract base class for two-line score frame renderers."""
+    
+    def __init__(self, context: TwoLineRenderContext):
+        self.context = context
+    
+    @abstractmethod
+    def make_frame(self, t: float) -> np.ndarray:
+        """Generate a frame at time t."""
+        pass
+    
+    def _get_keyframe_interpolation(self, t: float) -> tuple:
+        """Get playhead position interpolation data for time t."""
+        ctx = self.context
+        target_keyframes = ctx.measure_groups[ctx.current_group_index[0]]["keyframes"]
+        play_head_x0 = target_keyframes[0]["x"]
+        play_head_t0 = target_keyframes[0]["t"]
+        play_head_x1 = VIDEO_WIDTH - X_MARGIN
+        play_head_t1 = (ctx.measure_groups[ctx.current_group_index[0]+1]["absolutePlayTime"] 
+                       if ctx.current_group_index[0]+1 < len(ctx.measure_groups) 
+                       else ctx.total_seconds)
+        keyframe0 = target_keyframes[-1]
+        
+        for i in range(len(target_keyframes) - 1):
+            if target_keyframes[i]["t"] <= t < target_keyframes[i+1]["t"]:
+                play_head_x0 = target_keyframes[i]["x"]
+                play_head_t0 = target_keyframes[i]["t"]
+                play_head_x1 = target_keyframes[i+1]["x"]
+                play_head_t1 = target_keyframes[i+1]["t"]
+                keyframe0 = target_keyframes[i]
+                break
+        
+        return play_head_x0, play_head_t0, play_head_x1, play_head_t1, keyframe0
+    
+    def _update_sparkle_animations(self, t: float, keyframe0: dict) -> None:
+        """Update sparkle animation list based on current time."""
+        ctx = self.context
+        
+        # Remove sparkle animations that are out of time window
+        while len(ctx.sparkle_animation_list) > 0:
+            if t - ctx.sparkle_animation_list[0]["t"] > SPARKLE_ANIMATION_DURATION:
+                ctx.sparkle_animation_list.pop(0)
+            else:
+                break
+        
+        # Add sparkle animation that became available at time t
+        if t - keyframe0["t"] <= SPARKLE_ANIMATION_DURATION and keyframe0["t"] > ctx.last_added_sparkle_time[0]:
+            ctx.last_added_sparkle_time[0] = keyframe0["t"]
+            y_middles = keyframe0["y_middles"]
+            x = keyframe0["x"]
+            for y_middle in y_middles:
+                ctx.sparkle_animation_list.append({"x": x, "y": y_middle, "t": keyframe0["t"]})
+    
+    def _advance_group_if_needed(self, t: float) -> None:
+        """Advance to next measure group if time has passed."""
+        ctx = self.context
+        if (ctx.current_group_index[0]+1 < len(ctx.measure_groups) and 
+            t >= ctx.measure_groups[ctx.current_group_index[0]+1]["absolutePlayTime"]):
+            ctx.current_group_index[0] += 1
+            ctx.current_group_side[0] = 'bottom' if ctx.current_group_side[0] == 'top' else 'top'
+
+
+class TwoLineAlternatingRenderer(TwoLineFrameRenderer):
+    """Renderer for two-line alternating display mode."""
+    
+    def make_frame(self, t: float) -> np.ndarray:
+        ctx = self.context
+        
+        # Determine current group
+        self._advance_group_if_needed(t)
+        
+        # Get keyframe interpolation data
+        play_head_x0, play_head_t0, play_head_x1, play_head_t1, keyframe0 = self._get_keyframe_interpolation(t)
+        
+        # Update sparkle animations
+        self._update_sparkle_animations(t, keyframe0)
+        
+        play_head_x = play_head_x0 + (play_head_x1 - play_head_x0) * (t - play_head_t0) / (play_head_t1 - play_head_t0)
+        middle_point = VIDEO_HEIGHT // 4
+        play_head_y0 = middle_point - HANDS_SPACING_OFFSET - 4 * STAFF_LINE_SPACING - LINE_THICKNESS
+        
+        # Determine other side display
+        other_group_index = 0
+        other_group_opacity = 0.0
+        if ctx.current_group_index[0] == 0:
+            other_group_index = 1
+            other_group_opacity = 1.0
+        elif ctx.current_group_index[0] == len(ctx.measure_groups) - 1:
+            if t - ctx.measure_groups[ctx.current_group_index[0]]["absolutePlayTime"] <= GROUP_FADE_DURATION:
+                other_group_opacity = 1.0 - (t - ctx.measure_groups[ctx.current_group_index[0]]["absolutePlayTime"]) / GROUP_FADE_DURATION
+                other_group_index = ctx.current_group_index[0] - 1
+            else:
+                other_group_index = -1  # Indication of not to draw
+        elif t - ctx.measure_groups[ctx.current_group_index[0]]["absolutePlayTime"] <= GROUP_FADE_DURATION:
+            other_group_opacity = 1.0 - (t - ctx.measure_groups[ctx.current_group_index[0]]["absolutePlayTime"]) / GROUP_FADE_DURATION
+            other_group_index = ctx.current_group_index[0] - 1
+        else:
+            other_group_index = ctx.current_group_index[0] + 1
+            other_group_opacity = (t - ctx.measure_groups[ctx.current_group_index[0]]["absolutePlayTime"] - GROUP_FADE_DURATION) / GROUP_FADE_DURATION
+            if other_group_opacity > 1.0:
+                other_group_opacity = 1.0
+        
+        # Prepare image
+        combined = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 255, 255, 255))
+        
+        # Copy current section from frame_images
+        current_group_image = ctx.frame_images[ctx.current_group_index[0]].convert("RGBA")
+        draw = ImageDraw.Draw(current_group_image)
+        if DEBUG_MODE:
+            draw.text((30, 30), f"{str(ctx.current_group_index[0])}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+        
+        # Draw sparkle animations
+        sparkle_overlay = Image.new("RGBA", current_group_image.size, color=(0, 0, 0, 0))
+        sparkle_draw = ImageDraw.Draw(sparkle_overlay)
+        for sparkle_animation in ctx.sparkle_animation_list:
+            draw_note_sparkle(sparkle_draw, sparkle_animation["x"], sparkle_animation["y"], t - sparkle_animation["t"])
+        current_group_image = Image.alpha_composite(current_group_image, sparkle_overlay)
+        
+        if ctx.current_group_side[0] == 'top':
+            combined.paste(current_group_image, (0, 0), current_group_image)
+        else:
+            combined.paste(current_group_image, (0, VIDEO_HEIGHT // 2), current_group_image)
+        
+        # Draw the other section
+        if other_group_index != -1:
+            other_group_image = ctx.frame_images[other_group_index].convert('RGBA')
+            draw = ImageDraw.Draw(other_group_image)
+            if DEBUG_MODE:
+                draw.text((30, 30), f"{str(other_group_index)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+            other_group_image.putalpha(int(other_group_opacity * 255))
+            
+            if ctx.current_group_side[0] == 'top':
+                combined.paste(other_group_image, (0, VIDEO_HEIGHT // 2), other_group_image)
+            else:
+                combined.paste(other_group_image, (0, 0), other_group_image)
+        
+        # Convert RGBA to RGB for video output
+        combined_rgb = combined.convert('RGB')
+        frame_array = np.array(combined_rgb)
+        
+        return frame_array
+
+
+class TwoLineSequentialRenderer(TwoLineFrameRenderer):
+    """Renderer for two-line sequential display mode."""
+    
+    def make_frame(self, t: float) -> np.ndarray:
+        ctx = self.context
+        
+        # Determine current group
+        self._advance_group_if_needed(t)
+        
+        # Get keyframe interpolation data
+        play_head_x0, play_head_t0, play_head_x1, play_head_t1, keyframe0 = self._get_keyframe_interpolation(t)
+        
+        # Update sparkle animations
+        self._update_sparkle_animations(t, keyframe0)
+        
+        play_head_x = play_head_x0 + (play_head_x1 - play_head_x0) * (t - play_head_t0) / (play_head_t1 - play_head_t0)
+        middle_point = VIDEO_HEIGHT // 4
+        play_head_y0 = middle_point - HANDS_SPACING_OFFSET - 4 * STAFF_LINE_SPACING - LINE_THICKNESS
+        
+        # Determine other group index
+        other_group_index = 0
+        if ctx.current_group_index[0] == 0:
+            other_group_index = 1
+        elif ctx.current_group_index[0] == len(ctx.measure_groups) - 1:
+            if ctx.current_group_side[0] == 'bottom':
+                other_group_index = ctx.current_group_index[0] - 1
+            else:
+                other_group_index = -1  # Indication of not to draw
+        else:
+            if ctx.current_group_side[0] == 'bottom':
+                other_group_index = ctx.current_group_index[0] - 1
+            else:
+                other_group_index = ctx.current_group_index[0] + 1
+        
+        # Determine opacity for all. Fade out starts on the last note of the bottom score,
+        # and fade in completes before the first note of the next top score.
+        score_opacity = 1.0
+        render_group_index = ctx.current_group_index[0]
+        render_group_side = ctx.current_group_side[0]
+        other_render_group_index = other_group_index
+        play_head_opacity = 255
+        
+        if ctx.current_group_side[0] == 'bottom' and ctx.current_group_index[0] < len(ctx.measure_groups) - 1:
+            last_note_play_time = ctx.measure_groups[ctx.current_group_index[0]]["lastNotePlayTime"]
+            next_note_play_time = ctx.measure_groups[ctx.current_group_index[0]+1]["absolutePlayTime"]
+            if t >= last_note_play_time and t < next_note_play_time:
+                middle_time = (last_note_play_time + next_note_play_time) / 2
+                score_opacity = abs((t - middle_time) * 2 / (next_note_play_time - last_note_play_time))
+                play_head_opacity = int(255 * score_opacity)
+                if t > middle_time:
+                    render_group_index += 1
+                    render_group_side = 'top'
+                    other_render_group_index = render_group_index + 1 if render_group_index + 1 < len(ctx.measure_groups) else -1
+                    play_head_opacity = 0
+        
+        # Prepare image
+        combined = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 255, 255, 255))
+        
+        # Copy current section from frame_images
+        current_group_image = ctx.frame_images[render_group_index].convert("RGBA")
+        draw = ImageDraw.Draw(current_group_image)
+        if DEBUG_MODE:
+            draw.text((30, 30), f"{str(render_group_index)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+        current_group_image.putalpha(int(score_opacity * 255))
+        
+        # Draw sparkle animations
+        sparkle_overlay = Image.new("RGBA", current_group_image.size, color=(0, 0, 0, 0))
+        sparkle_draw = ImageDraw.Draw(sparkle_overlay)
+        for sparkle_animation in ctx.sparkle_animation_list:
+            draw_note_sparkle(sparkle_draw, sparkle_animation["x"], sparkle_animation["y"], t - sparkle_animation["t"])
+        if play_head_opacity > 0:
+            current_group_image = Image.alpha_composite(current_group_image, sparkle_overlay)
+        
+        if render_group_side == 'top':
+            combined.paste(current_group_image, (0, 0), current_group_image)
+        else:
+            combined.paste(current_group_image, (0, VIDEO_HEIGHT // 2), current_group_image)
+        
+        # Draw the other section
+        if other_render_group_index != -1:
+            other_group_image = ctx.frame_images[other_render_group_index].convert('RGBA')
+            draw = ImageDraw.Draw(other_group_image)
+            if DEBUG_MODE:
+                draw.text((30, 30), f"{str(other_render_group_index)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+            other_group_image.putalpha(int(score_opacity * 255))
+            
+            if render_group_side == 'top':
+                combined.paste(other_group_image, (0, VIDEO_HEIGHT // 2), other_group_image)
+            else:
+                combined.paste(other_group_image, (0, 0), other_group_image)
+        
+        # Convert RGBA to RGB for video output
+        combined_rgb = combined.convert('RGB')
+        frame_array = np.array(combined_rgb)
+        
+        return frame_array
+
+
+def generate_two_line_score_frames(
+    score: stream.Score,
+    right_hand_measures: list[stream.Measure],
+    left_hand_measures: list[stream.Measure],
+    total_seconds: float,
+) -> tuple[List[Image.Image], List[dict]]:
+    """
+    Generate score frame images for two-line video display.
+    
+    Groups measures to fit into fixed-width frames and creates score frame images.
+    This function is specific to two-line video types (alternating and sequential).
+    
+    Args:
+        score: music21 Score object
+        right_hand_measures: List of right hand measures
+        left_hand_measures: List of left hand measures
+        total_seconds: Total duration of the score in seconds
+    
+    Returns:
+        Tuple of (frame_images, measure_groups)
+    """
+    # Determine the set of measures to display per frame
+    measure_groups = group_measures_for_frame(right_hand_measures, left_hand_measures, score)
+    
+    frame_images = []
+    measure_group_info = None
+    
+    for i in range(len(measure_groups)):
+        end_measure_index = (len(right_hand_measures) - 1 
+                           if i == len(measure_groups) - 1 
+                           else measure_groups[i+1]["startMeasureIndex"] - 1)
+        end_measure_time = (measure_groups[i+1]["absolutePlayTime"] 
+                          if i+1 < len(measure_groups) 
+                          else total_seconds)
+        frame_image, measure_group_info = create_score_frame(
+            measure_group_info, 
+            right_hand_measures, 
+            left_hand_measures, 
+            measure_groups[i], 
+            end_measure_index, 
+            end_measure_time
+        )
+        frame_images.append(frame_image)
+    
+    return frame_images, measure_groups
+
+
+def _apply_performance_alignment(
+    measure_groups: List[dict],
+    total_seconds: float,
+    performance_midi_path: str,
+    score_path: str,
+    score_midi_path: str | None,
+) -> float:
+    """
+    Apply performance timing alignment to measure groups.
+    
+    Args:
+        measure_groups: List of measure group dictionaries to update in place
+        total_seconds: Original total duration in seconds
+        performance_midi_path: Path to performance MIDI file
+        score_path: Path to score file for alignment
+        score_midi_path: Optional path to score MIDI file
+    
+    Returns:
+        Updated total_seconds after alignment
+    """
+    try:
+        from partitura_alignment import compute_score_to_performance_time_warp
+
+        warp, diag = compute_score_to_performance_time_warp(
+            score_path=score_path,
+            performance_midi_path=performance_midi_path,
+            score_midi_path=score_midi_path,
+        )
+        print(
+            f"[alignment] score_groups={diag.n_score_groups} perf_groups={diag.n_perf_groups} "
+            f"anchors={diag.n_anchor_points} perf_shift={diag.perf_time_shift:.3f}s"
+        )
+
+        # Update measure start times (for group switching/fades) and keyframe times.
+        last_t = 0.0
+        for g in measure_groups:
+            if "startScoreQuarter" in g:
+                g["absolutePlayTime"] = float(warp(float(g["startScoreQuarter"])))
+            if "lastNoteQuarter" in g:
+                g["lastNotePlayTime"] = float(warp(float(g["lastNoteQuarter"])))
+            for kf in g.get("keyframes", []):
+                if "score_quarter" in kf and kf["score_quarter"] is not None:
+                    kf["t"] = float(warp(float(kf["score_quarter"])))
+            if g.get("keyframes"):
+                last_t = max(last_t, float(g["keyframes"][-1].get("t", 0.0)))
+
+        return max(total_seconds, last_t)
+    except Exception as e:
+        print(f"[alignment] WARNING: alignment failed ({type(e).__name__}: {e}); using score timing instead.")
+        return total_seconds
+
+
+def _calculate_total_seconds(score: stream.Score) -> float:
+    """
+    Calculate the total duration of a score in seconds based on tempo markings.
+    
+    Args:
+        score: music21 Score object
+    
+    Returns:
+        Total duration in seconds
+    """
+    flat = score.flat
+    tempos = list(flat.getElementsByClass(tempo.MetronomeMark))
+    tempos.sort(key=lambda m: m.offset)
+    total_quarters = score.duration.quarterLength
+    total_seconds = 0.0
+    
+    for i, mm in enumerate(tempos):
+        start = mm.offset
+        end = tempos[i+1].offset if i+1 < len(tempos) else total_quarters
+        bpm = mm.getQuarterBPM()
+        total_seconds += (end - start) * 60.0 / bpm
+    
+    return total_seconds
+
+
 def generate_movie(
     score: stream.Score,
     outputPath: str,
     *,
+    video_type: VideoType = VideoType.TWO_LINE_SEQUENTIAL,
     performance_midi_path: str | None = None,
     score_path: str | None = None,
     score_midi_path: str | None = None,
@@ -1944,309 +2333,58 @@ def generate_movie(
     
     Args:
         score: music21 Score object to convert to video
+        video_type: Type of video to generate (default: TWO_LINE_SEQUENTIAL)
         performance_midi_path: Optional performance MIDI to align timing to
         score_path: Path to the score file (MIDI or MusicXML) used for partitura alignment
         score_midi_path: Optional absolute path to a score MIDI file for score–performance alignment
     """
-    metadata = score.metadata
-    righthandPart = score.parts[0]
-    lefthandPart = score.parts[1]
-    rightHandMeasures = righthandPart.getElementsByClass(stream.Measure)
-    leftHandMeasures = lefthandPart.getElementsByClass(stream.Measure)
+    # Extract parts and measures
+    righthand_part = score.parts[0]
+    lefthand_part = score.parts[1]
+    right_hand_measures = righthand_part.getElementsByClass(stream.Measure)
+    left_hand_measures = lefthand_part.getElementsByClass(stream.Measure)
 
-    # Determine the total seconds of the score (symbolic timing).
-    flat = score.flat
-    tempos = list(flat.getElementsByClass(tempo.MetronomeMark))
-    tempos.sort(key=lambda m: m.offset)
-    total_quarters = score.duration.quarterLength
-    total_seconds = 0.0
-    for i, mm in enumerate(tempos):
-        start = mm.offset
-        end = tempos[i+1].offset if i+1 < len(tempos) else total_quarters
-        bpm = mm.getQuarterBPM()
+    # Calculate total duration
+    total_seconds = _calculate_total_seconds(score)
 
-        total_seconds += (end - start) * 60.0 / bpm
-
-    # Determine the set of measures to display per frame before rendering. 
-    # There will be top frame and bottom frame. 
-    measureGroups = group_measures_for_frame(rightHandMeasures, leftHandMeasures, score)
-    # measureGroups = [{"startMeasureIndex": int, "absolutePlayTime": float, "keyframes": list}, ...]
-
-    currentGroupIndex = [0]
-    currentGroupSide = ['top']
-    frameImages = []
-    sparkleAnimationList = []
-    lastAddedSparkleTime = [0.0]
-
-    # Generate all frame images before rendering. 
-    measureGroupInfo = None
-    for i in range(len(measureGroups)):
-        if i == 45:
-            print(":::")
-        endMeasureIndex = len(rightHandMeasures)-1 if i == len(measureGroups) - 1 else measureGroups[i+1]["startMeasureIndex"] - 1
-        endMeasureTime = measureGroups[i+1]["absolutePlayTime"] if i+1 < len(measureGroups) else total_seconds
-        frameImage, measureGroupInfo = create_score_frame(measureGroupInfo, rightHandMeasures, leftHandMeasures, measureGroups[i], endMeasureIndex, endMeasureTime)
-        frameImages.append(frameImage)
-
-    # Optional: replace symbolic timing with performance timing via partitura-based alignment.
-    if performance_midi_path is not None:
-        if score_path is None:
-            raise ValueError("score_path must be provided when performance_midi_path is set")
-
-        try:
-            from partitura_alignment import compute_score_to_performance_time_warp
-
-            warp, diag = compute_score_to_performance_time_warp(
-                score_path=score_path,
-                performance_midi_path=performance_midi_path,
-                score_midi_path=score_midi_path,
+    # Generate frames based on video type
+    if video_type in (VideoType.TWO_LINE_ALTERNATING, VideoType.TWO_LINE_SEQUENTIAL):
+        # Generate two-line score frames
+        frame_images, measure_groups = generate_two_line_score_frames(
+            score, right_hand_measures, left_hand_measures, total_seconds
+        )
+        
+        # Apply performance alignment if provided
+        if performance_midi_path is not None:
+            if score_path is None:
+                raise ValueError("score_path must be provided when performance_midi_path is set")
+            total_seconds = _apply_performance_alignment(
+                measure_groups, total_seconds, 
+                performance_midi_path, score_path, score_midi_path
             )
-            print(
-                f"[alignment] score_groups={diag.n_score_groups} perf_groups={diag.n_perf_groups} "
-                f"anchors={diag.n_anchor_points} perf_shift={diag.perf_time_shift:.3f}s"
-            )
-
-            # Update measure start times (for group switching/fades) and keyframe times.
-            last_t = 0.0
-            for g in measureGroups:
-                if "startScoreQuarter" in g:
-                    g["absolutePlayTime"] = float(warp(float(g["startScoreQuarter"])))
-                if "lastNoteQuarter" in g:
-                    g["lastNotePlayTime"] = float(warp(float(g["lastNoteQuarter"])))
-                for kf in g.get("keyframes", []):
-                    if "score_quarter" in kf and kf["score_quarter"] is not None:
-                        kf["t"] = float(warp(float(kf["score_quarter"])))
-                if g.get("keyframes"):
-                    last_t = max(last_t, float(g["keyframes"][-1].get("t", 0.0)))
-
-            total_seconds = max(total_seconds, last_t)
-        except Exception as e:
-            print(f"[alignment] WARNING: alignment failed ({type(e).__name__}: {e}); using score timing instead.")
-
-    def make_frame_alternating(t):
-        # Determine current group.
-        if currentGroupIndex[0]+1 < len(measureGroups) and t >= measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"]:
-            currentGroupIndex[0] += 1
-            currentGroupSide[0] = 'bottom' if currentGroupSide[0] == 'top' else 'top'
-
-        # Determine playhead position with interpolation.
-        targetKeyFrames = measureGroups[currentGroupIndex[0]]["keyframes"]
-        playHeadX0 = targetKeyFrames[0]["x"]
-        playHeadT0 = targetKeyFrames[0]["t"]
-        playHeadX1 = VIDEO_WIDTH - X_MARGIN
-        playHeadT1 = measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"] if currentGroupIndex[0]+1 < len(measureGroups) else total_seconds
-        keyFrame0 = targetKeyFrames[-1]
-        for i in range(len(targetKeyFrames) - 1):
-            if targetKeyFrames[i]["t"] <= t < targetKeyFrames[i+1]["t"]:
-                playHeadX0 = targetKeyFrames[i]["x"]
-                playHeadT0 = targetKeyFrames[i]["t"]
-                playHeadX1 = targetKeyFrames[i+1]["x"]
-                playHeadT1 = targetKeyFrames[i+1]["t"]
-                keyFrame0 = targetKeyFrames[i]
-                break
         
-        # Remove sparkle animations that are out of time window.
-        for i in range(len(sparkleAnimationList)):
-            if t - sparkleAnimationList[i]["t"] > SPARKLE_ANIMATION_DURATION:
-                sparkleAnimationList.pop(0)
-                i -= 1
-            else:
-                break
-
-        # Add sparkle animation that became available at time t.
-        if t - keyFrame0["t"] <= SPARKLE_ANIMATION_DURATION and keyFrame0["t"] > lastAddedSparkleTime[0]:
-            lastAddedSparkleTime[0] = keyFrame0["t"]
-            yMiddles = keyFrame0["y_middles"]
-            x = keyFrame0["x"]
-            for yMiddle in yMiddles:
-                sparkleAnimationList.append({"x": x, "y": yMiddle, "t": keyFrame0["t"]})
+        # Create render context
+        render_context = TwoLineRenderContext(
+            frame_images=frame_images,
+            measure_groups=measure_groups,
+            total_seconds=total_seconds,
+            current_group_index=[0],
+            current_group_side=['top'],
+            sparkle_animation_list=[],
+            last_added_sparkle_time=[0.0],
+        )
         
-        playHeadX = playHeadX0 + (playHeadX1 - playHeadX0) * (t - playHeadT0) / (playHeadT1 - playHeadT0)
-        middlePoint = VIDEO_HEIGHT//4
-        playHeadY0 = middlePoint - HANDS_SPACING_OFFSET - 4*STAFF_LINE_SPACING - LINE_THICKNESS
-        
-        # The other side should display either fading out previous group or fading in next group.
-        otherGroupIndex = 0
-        otherGroupOpacity = 0.0
-        if currentGroupIndex[0] == 0:
-            otherGroupIndex = 1
-            otherGroupOpacity = 1.0
-        elif currentGroupIndex[0] == len(measureGroups) - 1:
-            if t - measureGroups[currentGroupIndex[0]]["absolutePlayTime"] <= GROUP_FADE_DURATION:
-                otherGroupOpacity = 1.0 - (t - measureGroups[currentGroupIndex[0]]["absolutePlayTime"]) / GROUP_FADE_DURATION
-                otherGroupIndex = currentGroupIndex[0] - 1
-            else:
-                otherGroupIndex = -1 # Indication of not to draw. 
-        elif t - measureGroups[currentGroupIndex[0]]["absolutePlayTime"] <= GROUP_FADE_DURATION:
-            otherGroupOpacity = 1.0 - (t - measureGroups[currentGroupIndex[0]]["absolutePlayTime"]) / GROUP_FADE_DURATION
-            otherGroupIndex = currentGroupIndex[0] - 1
+        # Create appropriate renderer
+        if video_type == VideoType.TWO_LINE_ALTERNATING:
+            renderer = TwoLineAlternatingRenderer(render_context)
         else:
-            otherGroupIndex = currentGroupIndex[0] + 1
-            otherGroupOpacity = (t - measureGroups[currentGroupIndex[0]]["absolutePlayTime"] - GROUP_FADE_DURATION) / GROUP_FADE_DURATION
-            if otherGroupOpacity > 1.0:
-                otherGroupOpacity = 1.0
+            renderer = TwoLineSequentialRenderer(render_context)
         
-        # Prepare image.
-        combined = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 255, 255, 255))
-
-        # copy current section from frameImages
-        currentGroupImage = frameImages[currentGroupIndex[0]].convert("RGBA")
-        draw = ImageDraw.Draw(currentGroupImage)
-        # draw_playhead(draw, playHeadX, playHeadY0, 255)
-        if DEBUG_MODE:
-            draw.text((30, 30), f"{str(currentGroupIndex[0])}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
-        # Draw sparkle animations.
-        sparkleOverlay = Image.new("RGBA", currentGroupImage.size, color=(0, 0, 0, 0))
-        sparkleDraw = ImageDraw.Draw(sparkleOverlay)
-        for sparkleAnimation in sparkleAnimationList:
-            draw_note_sparkle(sparkleDraw, sparkleAnimation["x"], sparkleAnimation["y"], t - sparkleAnimation["t"])
-        # Alpha composting
-        currentGroupImage = Image.alpha_composite(currentGroupImage, sparkleOverlay)
-
-        if currentGroupSide[0] == 'top':
-            combined.paste(currentGroupImage, (0, 0), currentGroupImage)
-        else:
-            combined.paste(currentGroupImage, (0, VIDEO_HEIGHT // 2), currentGroupImage)
-
-        # draw the other section
-        if otherGroupIndex != -1:
-            otherGroupImage = frameImages[otherGroupIndex].convert('RGBA')
-            draw = ImageDraw.Draw(otherGroupImage)
-            if DEBUG_MODE:
-                draw.text((30, 30), f"{str(otherGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
-            otherGroupImage.putalpha(int(otherGroupOpacity*255))
-            
-            if currentGroupSide[0] == 'top':
-                combined.paste(otherGroupImage, (0, VIDEO_HEIGHT // 2), otherGroupImage)
-            else:
-                combined.paste(otherGroupImage, (0, 0), otherGroupImage)
-
-        # Convert RGBA to RGB for video output
-        combined_rgb = combined.convert('RGB')
-        frame_array = np.array(combined_rgb)
-
-        return frame_array
-
-    def make_frame_sequential(t):
-        # Determine current group.
-        if currentGroupIndex[0]+1 < len(measureGroups) and t >= measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"]:
-            currentGroupIndex[0] += 1
-            currentGroupSide[0] = 'bottom' if currentGroupSide[0] == 'top' else 'top'
-
-        # Determine playhead position with interpolation.
-        targetKeyFrames = measureGroups[currentGroupIndex[0]]["keyframes"]
-        playHeadX0 = targetKeyFrames[0]["x"]
-        playHeadT0 = targetKeyFrames[0]["t"]
-        playHeadX1 = VIDEO_WIDTH - X_MARGIN
-        playHeadT1 = measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"] if currentGroupIndex[0]+1 < len(measureGroups) else total_seconds
-        keyFrame0 = targetKeyFrames[-1]
-        for i in range(len(targetKeyFrames) - 1):
-            if targetKeyFrames[i]["t"] <= t < targetKeyFrames[i+1]["t"]:
-        
-                playHeadX0 = targetKeyFrames[i]["x"]
-                playHeadT0 = targetKeyFrames[i]["t"]
-                playHeadX1 = targetKeyFrames[i+1]["x"]
-                playHeadT1 = targetKeyFrames[i+1]["t"]
-                keyFrame0 = targetKeyFrames[i]
-                break
-        
-        # Remove sparkle animations that are out of time window.
-        while len(sparkleAnimationList) > 0:
-            if t - sparkleAnimationList[0]["t"] > SPARKLE_ANIMATION_DURATION:
-                sparkleAnimationList.pop(0)
-            else:
-                break
-
-        # Add sparkle animation that became available at time t.
-        if t - keyFrame0["t"] <= SPARKLE_ANIMATION_DURATION and keyFrame0["t"] > lastAddedSparkleTime[0]:
-            lastAddedSparkleTime[0] = keyFrame0["t"]
-            yMiddles = keyFrame0["y_middles"]
-            x = keyFrame0["x"]
-            for yMiddle in yMiddles:
-                sparkleAnimationList.append({"x": x, "y": yMiddle, "t": keyFrame0["t"]})
-        
-        playHeadX = playHeadX0 + (playHeadX1 - playHeadX0) * (t - playHeadT0) / (playHeadT1 - playHeadT0)
-        middlePoint = VIDEO_HEIGHT//4
-        playHeadY0 = middlePoint - HANDS_SPACING_OFFSET - 4*STAFF_LINE_SPACING - LINE_THICKNESS
-
-        otherGroupIndex = 0
-        if currentGroupIndex[0] == 0:
-            otherGroupIndex = 1
-        elif currentGroupIndex[0] == len(measureGroups) - 1:
-            if currentGroupSide[0] == 'bottom':
-                otherGroupIndex = currentGroupIndex[0] - 1
-            else:
-                otherGroupIndex = -1 # Indication of not to draw. 
-        else:
-            if currentGroupSide[0] == 'bottom':
-                otherGroupIndex = currentGroupIndex[0] - 1
-            else:
-                otherGroupIndex = currentGroupIndex[0] + 1
-
-        # Determina opacity for all. Fade out starts on the last note of the bottom score, and fade in completes before the first note of the next top score.
-        scoreOpacity = 1.0
-        renderGroupIndex = currentGroupIndex[0]
-        renderGroupSide = currentGroupSide[0]
-        otherRenderGroupIndex = otherGroupIndex
-        playHeadOpacity = 255
-        if currentGroupSide[0] == 'bottom' and currentGroupIndex[0] < len(measureGroups) - 1:
-            lastNotePlayTime = measureGroups[currentGroupIndex[0]]["lastNotePlayTime"]
-            nextNotePlayTime = measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"]
-            if t >= lastNotePlayTime and t < nextNotePlayTime:
-                middleTime = (lastNotePlayTime + nextNotePlayTime) / 2
-                scoreOpacity = abs((t - middleTime)*2 / (nextNotePlayTime - lastNotePlayTime))
-                playHeadOpacity = int(255*scoreOpacity)
-                if t > middleTime:
-                    renderGroupIndex += 1
-                    renderGroupSide = 'top'
-                    otherRenderGroupIndex = renderGroupIndex + 1 if renderGroupIndex + 1 < len(measureGroups) else -1
-                    playHeadOpacity = 0
-
-        # Prepare image.
-        combined = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 255, 255, 255))
-
-        # copy current section from frameImages
-        currentGroupImage = frameImages[renderGroupIndex].convert("RGBA")
-        draw = ImageDraw.Draw(currentGroupImage)
-        # if playHeadOpacity > 0:
-        #     draw_playhead(draw, playHeadX, playHeadY0, playHeadOpacity)
-        if DEBUG_MODE:
-            draw.text((30, 30), f"{str(renderGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
-        currentGroupImage.putalpha(int(scoreOpacity*255))
-        # Draw sparkle animations.
-        sparkleOverlay = Image.new("RGBA", currentGroupImage.size, color=(0, 0, 0, 0))
-        sparkleDraw = ImageDraw.Draw(sparkleOverlay)
-        for sparkleAnimation in sparkleAnimationList:
-            draw_note_sparkle(sparkleDraw, sparkleAnimation["x"], sparkleAnimation["y"], t - sparkleAnimation["t"])
-        # Alpha composting
-        if playHeadOpacity > 0:
-            currentGroupImage = Image.alpha_composite(currentGroupImage, sparkleOverlay)            
-
-        if renderGroupSide == 'top':
-            combined.paste(currentGroupImage, (0, 0), currentGroupImage)
-        else:
-            combined.paste(currentGroupImage, (0, VIDEO_HEIGHT // 2), currentGroupImage)
-        
-        # draw the other section
-        if otherRenderGroupIndex != -1:
-            otherGroupImage = frameImages[otherRenderGroupIndex].convert('RGBA')
-            draw = ImageDraw.Draw(otherGroupImage)
-            if DEBUG_MODE:
-                draw.text((30, 30), f"{str(otherRenderGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
-            otherGroupImage.putalpha(int(scoreOpacity*255))
-            
-            if renderGroupSide == 'top':
-                combined.paste(otherGroupImage, (0, VIDEO_HEIGHT // 2), otherGroupImage)
-            else:
-                combined.paste(otherGroupImage, (0, 0), otherGroupImage)
-
-        # Convert RGBA to RGB for video output
-        combined_rgb = combined.convert('RGB')
-        frame_array = np.array(combined_rgb)
-
-        return frame_array
-
-    video = VideoClip(make_frame_sequential, duration=total_seconds)
+        # Generate video
+        video = VideoClip(renderer.make_frame, duration=total_seconds)
+    else:
+        # Placeholder for future video types (e.g., SINGLE_LINE_MOVING)
+        raise NotImplementedError(f"Video type {video_type} is not yet implemented")
 
     video.write_videofile(outputPath, fps=FPS, codec='libx264', audio=False)
 

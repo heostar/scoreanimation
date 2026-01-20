@@ -10,7 +10,7 @@ import sys
 
 from music21 import converter, key, stream
 import verovio
-from score2movie import generate_movie
+from score2movie import generate_movie, VideoType
 
 def main(score_file_path: str, performance_midi_path: str | None = None, score_midi_path: str | None = None) -> None:
     """
@@ -57,6 +57,7 @@ def main(score_file_path: str, performance_midi_path: str | None = None, score_m
         generate_movie(
             score,
             output_path,
+            video_type=VideoType.TWO_LINE_SEQUENTIAL,
             performance_midi_path=performance_midi_path,
             score_path=score_file_path,
             score_midi_path=score_midi_path,
