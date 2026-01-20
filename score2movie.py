@@ -15,6 +15,8 @@ import math
 import random
 import sys
 
+DEBUG_MODE = False
+
 # Constants
 VIDEO_WIDTH = 1920
 VIDEO_HEIGHT = 1080
@@ -26,7 +28,8 @@ X_SIGN_OFFSET = 10
 X_CLEF_OFFSET = X_SIGN_OFFSET
 X_TIME_SIG_OFFSET = X_SIGN_OFFSET
 DEFAULT_MEASURE_COUNT_PER_GROUP = 6
-ACCIDENTAL_SPACE = 15
+ACCIDENTAL_SIGN_WIDTH = 15
+ACCIDENTAL_SPACE = ACCIDENTAL_SIGN_WIDTH*2+5 # 15*2 pixels for the accidental, 5 pixels for the space between the accidentals.
 MINIMUM_DISTANCE_BETWEEN_NOTES = 40
 GROUP_FADE_DURATION = 0.2
 FLAT_OFFSET = -6
@@ -284,7 +287,7 @@ def draw_brace(draw: ImageDraw.Draw, x: int, y: float, font: ImageFont.FreeTypeF
 KEY_SIGNATURE_ACCIDENTAL_SPACING = 1  # Pixels between accidentals in key signature
 MAX_KEY_SIGNATURE_ACCIDENTALS = 7  # Maximum sharps/flats (A# minor or Cb major)
 
-FPS = 15
+FPS = 60
 
 def load_music_font(size: int):
     # Bravura font paths (SMuFL compliant)
@@ -451,7 +454,7 @@ def draw_accidental(draw: ImageDraw.Draw, x: int, y: float, accidental, accident
                 'natural': -acc_height/2
             }.get(accidental.fullName, 0)
             acc_y = y + acc_y_offset
-            draw.text((x - ACCIDENTAL_SPACE, acc_y), acc_char, fill=(0, 0, 0), 
+            draw.text((x, acc_y), acc_char, fill=(0, 0, 0), 
                      font=accidental_font, anchor='lt')
 
 def duration_to_rest_type(duration_quarters: float) -> str:
@@ -764,7 +767,7 @@ def draw_note(draw: ImageDraw.Draw, x: int, pitch: pitch.Pitch, note_type: str,
     
     # Check if accidental is needed
     accidental = pitch.accidental
-    draw_accidental(draw, x, actual_y, accidental, accidental_font)
+    draw_accidental(draw, x - ACCIDENTAL_SIGN_WIDTH, actual_y, accidental, accidental_font)
     
     # Determine stem direction based on staff position
     # Middle line is at position 2.0 (third line, counting from bottom as 0, 1, 2, 3, 4)
@@ -928,11 +931,20 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List,
     # Draw accidentals first (left to right, staggered vertically)
     # Use consistent accidental width (same as single notes: 20 pixels)
     # This ensures noteheads align at the same position for uniform spacing
-    has_accidentals = any(note_info['accidental'] for note_info in noteList)
+    note_with_accidentals = []
+    for note_info in noteList:
+        if note_info['accidental']:
+            note_with_accidentals.insert(0, note_info)
     
-    if has_accidentals:        
-        for i, note_info in enumerate(noteList):
-            draw_accidental(draw, x, note_info['y'], note_info['accidental'], accidental_font)
+    if len(note_with_accidentals) > 0:
+        x_accidental = x - ACCIDENTAL_SIGN_WIDTH
+        for i, note_info in enumerate(note_with_accidentals):
+            if i>0:
+                if abs(note_info['staff_pos'] - note_with_accidentals[i-1]['staff_pos']) < 2.0:
+                    x_accidental = x - ACCIDENTAL_SPACE if x_accidental == x - ACCIDENTAL_SIGN_WIDTH else x - ACCIDENTAL_SIGN_WIDTH
+                else:
+                    x_accidental = x - ACCIDENTAL_SIGN_WIDTH
+            draw_accidental(draw, x_accidental, note_info['y'], note_info['accidental'], accidental_font)
     
     baseNoteX = x
     # Draw the note/noteheads.
@@ -976,14 +988,14 @@ def draw_chord(draw: ImageDraw.Draw, x: int, pitches: List,
         stemEndY = topNote['y']
         if stem_up:
             # Place stem on the right side
-            stemX = x + noneStemNoteW + CHORD_STEM_X_OFFSET
+            stemX = x + noneStemNoteW - 1
         else:
             if stem_note_i is not None:
                 # When the stem is downward and two notes are half step apart, the second note is the stem note.
                 # Therefore, the stem should be placed on the right side of the first note.
-                stemX = x + noneStemNoteW + CHORD_STEM_X_OFFSET
+                stemX = x + noneStemNoteW - 1
             else:
-                stemX = x - CHORD_STEM_X_OFFSET
+                stemX = x + 2
         
         # Draw stem line
         draw.line([(stemX, stemStartY), (stemX, stemEndY)], 
@@ -1770,8 +1782,10 @@ def group_measures_for_frame(
 
     # How to determine the number of measures per frame
     # The width between two notes should be at least 
-    trebleSignWidthInPixels = draw.textbbox((0,0), '\U0001D11E', font=load_music_font(FONT_SIZES['clef']))[2] - draw.textbbox((0,0), '\U0001D11E', font=load_music_font(FONT_SIZES['clef']))[0]
-    bassSignWidthInPixels = draw.textbbox((0,0), '\U0001D122', font=load_music_font(FONT_SIZES['clef']))[2] - draw.textbbox((0,0), '\U0001D122', font=load_music_font(FONT_SIZES['clef']))[0]
+    bbox = draw.textbbox((0,0), MUSICAL_SYMBOLS['treble_clef'], font=load_music_font(FONT_SIZES['clef']))
+    trebleSignWidthInPixels = bbox[2] - bbox[0]
+    bbox = draw.textbbox((0,0), MUSICAL_SYMBOLS['bass_clef'], font=load_music_font(FONT_SIZES['clef']))
+    bassSignWidthInPixels = bbox[2] - bbox[0]
     clefWidth = max(trebleSignWidthInPixels, bassSignWidthInPixels)
     keySignatureWidth = calculate_key_signature_width(draw, rightHandMeasures[0].keySignature)
     timeSignatureFont = ImageFont.truetype("AppleMyungjo.ttf", FONT_SIZES['time_sig'])
@@ -1879,11 +1893,32 @@ def group_measures_for_frame(
         relativePlayTimes = []
         for i in range(numberOfMeasures):
             relativePlayTimes.append(quarter_notes_to_seconds(rightHandMeasures[currentMeasureIndex + i].offset) - absolutePlayTime)
+
+        # Calculate the absolute play time of the last note in this measure group
+        lastMeasureIndex = currentMeasureIndex + numberOfMeasures - 1
+        lastMeasure = rightHandMeasures[lastMeasureIndex]
+        lastMeasureOffset = lastMeasure.offset
+        lastNoteQuarterOffset = lastMeasureOffset
+        
+        # Check right hand last measure for the last note
+        rightHandLastMeasureNotes = rightHandMeasures[lastMeasureIndex].notes
+        if len(rightHandLastMeasureNotes) > 0:
+            lastRightNote = rightHandLastMeasureNotes[len(rightHandLastMeasureNotes)-1]
+            # Note offset is relative to measure, so add measure offset for absolute time
+            lastNoteQuarterOffset = max(lastNoteQuarterOffset, lastMeasureOffset + lastRightNote.offset)
+        
+        # Check left hand last measure for the last note
+        leftHandLastMeasureNotes = leftHandMeasures[lastMeasureIndex].notes
+        if len(leftHandLastMeasureNotes) > 0:
+            lastLeftNote = leftHandLastMeasureNotes[len(leftHandLastMeasureNotes)-1]
+            lastNoteQuarterOffset = max(lastNoteQuarterOffset, lastMeasureOffset + lastLeftNote.offset)
         
         measureNumberPairs.append({
             "startMeasureIndex": currentMeasureIndex,
             "absolutePlayTime": absolutePlayTime,
             "startScoreQuarter": float(measureOffsetInQuarters),
+            "lastNoteQuarter": float(lastNoteQuarterOffset),
+            "lastNotePlayTime": quarter_notes_to_seconds(lastNoteQuarterOffset),
             "relativePlayTimes": relativePlayTimes,
             "keyframes": [],
         })
@@ -1940,6 +1975,8 @@ def generate_movie(
     currentGroupIndex = [0]
     currentGroupSide = ['top']
     frameImages = []
+    sparkleAnimationList = []
+    lastAddedSparkleTime = [0.0]
 
     # Generate all frame images before rendering. 
     measureGroupInfo = None
@@ -1974,6 +2011,8 @@ def generate_movie(
             for g in measureGroups:
                 if "startScoreQuarter" in g:
                     g["absolutePlayTime"] = float(warp(float(g["startScoreQuarter"])))
+                if "lastNoteQuarter" in g:
+                    g["lastNotePlayTime"] = float(warp(float(g["lastNoteQuarter"])))
                 for kf in g.get("keyframes", []):
                     if "score_quarter" in kf and kf["score_quarter"] is not None:
                         kf["t"] = float(warp(float(kf["score_quarter"])))
@@ -1984,7 +2023,7 @@ def generate_movie(
         except Exception as e:
             print(f"[alignment] WARNING: alignment failed ({type(e).__name__}: {e}); using score timing instead.")
 
-    def make_frame(t):
+    def make_frame_alternating(t):
         # Determine current group.
         if currentGroupIndex[0]+1 < len(measureGroups) and t >= measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"]:
             currentGroupIndex[0] += 1
@@ -2006,13 +2045,21 @@ def generate_movie(
                 keyFrame0 = targetKeyFrames[i]
                 break
         
-        # Figure out the notes that note sparkle animation applies at time t. 
-        sparkleAnimationList = []
-        if t - keyFrame0["t"] < SPARKLE_ANIMATION_DURATION:
+        # Remove sparkle animations that are out of time window.
+        for i in range(len(sparkleAnimationList)):
+            if t - sparkleAnimationList[i]["t"] > SPARKLE_ANIMATION_DURATION:
+                sparkleAnimationList.pop(0)
+                i -= 1
+            else:
+                break
+
+        # Add sparkle animation that became available at time t.
+        if t - keyFrame0["t"] <= SPARKLE_ANIMATION_DURATION and keyFrame0["t"] > lastAddedSparkleTime[0]:
+            lastAddedSparkleTime[0] = keyFrame0["t"]
             yMiddles = keyFrame0["y_middles"]
             x = keyFrame0["x"]
             for yMiddle in yMiddles:
-                sparkleAnimationList.append({"x": x, "y": yMiddle, "t": t - keyFrame0["t"]})
+                sparkleAnimationList.append({"x": x, "y": yMiddle, "t": keyFrame0["t"]})
         
         playHeadX = playHeadX0 + (playHeadX1 - playHeadX0) * (t - playHeadT0) / (playHeadT1 - playHeadT0)
         middlePoint = VIDEO_HEIGHT//4
@@ -2045,13 +2092,14 @@ def generate_movie(
         # copy current section from frameImages
         currentGroupImage = frameImages[currentGroupIndex[0]].convert("RGBA")
         draw = ImageDraw.Draw(currentGroupImage)
-        draw_playhead(draw, playHeadX, playHeadY0, 255)
-        draw.text((30, 30), f"{str(currentGroupIndex[0])}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+        # draw_playhead(draw, playHeadX, playHeadY0, 255)
+        if DEBUG_MODE:
+            draw.text((30, 30), f"{str(currentGroupIndex[0])}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
         # Draw sparkle animations.
         sparkleOverlay = Image.new("RGBA", currentGroupImage.size, color=(0, 0, 0, 0))
         sparkleDraw = ImageDraw.Draw(sparkleOverlay)
         for sparkleAnimation in sparkleAnimationList:
-            draw_note_sparkle(sparkleDraw, sparkleAnimation["x"], sparkleAnimation["y"], sparkleAnimation["t"])
+            draw_note_sparkle(sparkleDraw, sparkleAnimation["x"], sparkleAnimation["y"], t - sparkleAnimation["t"])
         # Alpha composting
         currentGroupImage = Image.alpha_composite(currentGroupImage, sparkleOverlay)
 
@@ -2064,7 +2112,8 @@ def generate_movie(
         if otherGroupIndex != -1:
             otherGroupImage = frameImages[otherGroupIndex].convert('RGBA')
             draw = ImageDraw.Draw(otherGroupImage)
-            draw.text((30, 30), f"{str(otherGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+            if DEBUG_MODE:
+                draw.text((30, 30), f"{str(otherGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
             otherGroupImage.putalpha(int(otherGroupOpacity*255))
             
             if currentGroupSide[0] == 'top':
@@ -2076,12 +2125,128 @@ def generate_movie(
         combined_rgb = combined.convert('RGB')
         frame_array = np.array(combined_rgb)
 
-        # Determine playhead position
+        return frame_array
+
+    def make_frame_sequential(t):
+        # Determine current group.
+        if currentGroupIndex[0]+1 < len(measureGroups) and t >= measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"]:
+            currentGroupIndex[0] += 1
+            currentGroupSide[0] = 'bottom' if currentGroupSide[0] == 'top' else 'top'
+
+        # Determine playhead position with interpolation.
+        targetKeyFrames = measureGroups[currentGroupIndex[0]]["keyframes"]
+        playHeadX0 = targetKeyFrames[0]["x"]
+        playHeadT0 = targetKeyFrames[0]["t"]
+        playHeadX1 = VIDEO_WIDTH - X_MARGIN
+        playHeadT1 = measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"] if currentGroupIndex[0]+1 < len(measureGroups) else total_seconds
+        keyFrame0 = targetKeyFrames[-1]
+        for i in range(len(targetKeyFrames) - 1):
+            if targetKeyFrames[i]["t"] <= t < targetKeyFrames[i+1]["t"]:
+        
+                playHeadX0 = targetKeyFrames[i]["x"]
+                playHeadT0 = targetKeyFrames[i]["t"]
+                playHeadX1 = targetKeyFrames[i+1]["x"]
+                playHeadT1 = targetKeyFrames[i+1]["t"]
+                keyFrame0 = targetKeyFrames[i]
+                break
+        
+        # Remove sparkle animations that are out of time window.
+        while len(sparkleAnimationList) > 0:
+            if t - sparkleAnimationList[0]["t"] > SPARKLE_ANIMATION_DURATION:
+                sparkleAnimationList.pop(0)
+            else:
+                break
+
+        # Add sparkle animation that became available at time t.
+        if t - keyFrame0["t"] <= SPARKLE_ANIMATION_DURATION and keyFrame0["t"] > lastAddedSparkleTime[0]:
+            lastAddedSparkleTime[0] = keyFrame0["t"]
+            yMiddles = keyFrame0["y_middles"]
+            x = keyFrame0["x"]
+            for yMiddle in yMiddles:
+                sparkleAnimationList.append({"x": x, "y": yMiddle, "t": keyFrame0["t"]})
+        
+        playHeadX = playHeadX0 + (playHeadX1 - playHeadX0) * (t - playHeadT0) / (playHeadT1 - playHeadT0)
+        middlePoint = VIDEO_HEIGHT//4
+        playHeadY0 = middlePoint - HANDS_SPACING_OFFSET - 4*STAFF_LINE_SPACING - LINE_THICKNESS
+
+        otherGroupIndex = 0
+        if currentGroupIndex[0] == 0:
+            otherGroupIndex = 1
+        elif currentGroupIndex[0] == len(measureGroups) - 1:
+            if currentGroupSide[0] == 'bottom':
+                otherGroupIndex = currentGroupIndex[0] - 1
+            else:
+                otherGroupIndex = -1 # Indication of not to draw. 
+        else:
+            if currentGroupSide[0] == 'bottom':
+                otherGroupIndex = currentGroupIndex[0] - 1
+            else:
+                otherGroupIndex = currentGroupIndex[0] + 1
+
+        # Determina opacity for all. Fade out starts on the last note of the bottom score, and fade in completes before the first note of the next top score.
+        scoreOpacity = 1.0
+        renderGroupIndex = currentGroupIndex[0]
+        renderGroupSide = currentGroupSide[0]
+        otherRenderGroupIndex = otherGroupIndex
+        playHeadOpacity = 255
+        if currentGroupSide[0] == 'bottom' and currentGroupIndex[0] < len(measureGroups) - 1:
+            lastNotePlayTime = measureGroups[currentGroupIndex[0]]["lastNotePlayTime"]
+            nextNotePlayTime = measureGroups[currentGroupIndex[0]+1]["absolutePlayTime"]
+            if t >= lastNotePlayTime and t < nextNotePlayTime:
+                middleTime = (lastNotePlayTime + nextNotePlayTime) / 2
+                scoreOpacity = abs((t - middleTime)*2 / (nextNotePlayTime - lastNotePlayTime))
+                playHeadOpacity = int(255*scoreOpacity)
+                if t > middleTime:
+                    renderGroupIndex += 1
+                    renderGroupSide = 'top'
+                    otherRenderGroupIndex = renderGroupIndex + 1 if renderGroupIndex + 1 < len(measureGroups) else -1
+                    playHeadOpacity = 0
+
+        # Prepare image.
+        combined = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 255, 255, 255))
+
+        # copy current section from frameImages
+        currentGroupImage = frameImages[renderGroupIndex].convert("RGBA")
+        draw = ImageDraw.Draw(currentGroupImage)
+        # if playHeadOpacity > 0:
+        #     draw_playhead(draw, playHeadX, playHeadY0, playHeadOpacity)
+        if DEBUG_MODE:
+            draw.text((30, 30), f"{str(renderGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+        currentGroupImage.putalpha(int(scoreOpacity*255))
+        # Draw sparkle animations.
+        sparkleOverlay = Image.new("RGBA", currentGroupImage.size, color=(0, 0, 0, 0))
+        sparkleDraw = ImageDraw.Draw(sparkleOverlay)
+        for sparkleAnimation in sparkleAnimationList:
+            draw_note_sparkle(sparkleDraw, sparkleAnimation["x"], sparkleAnimation["y"], t - sparkleAnimation["t"])
+        # Alpha composting
+        if playHeadOpacity > 0:
+            currentGroupImage = Image.alpha_composite(currentGroupImage, sparkleOverlay)            
+
+        if renderGroupSide == 'top':
+            combined.paste(currentGroupImage, (0, 0), currentGroupImage)
+        else:
+            combined.paste(currentGroupImage, (0, VIDEO_HEIGHT // 2), currentGroupImage)
+        
+        # draw the other section
+        if otherRenderGroupIndex != -1:
+            otherGroupImage = frameImages[otherRenderGroupIndex].convert('RGBA')
+            draw = ImageDraw.Draw(otherGroupImage)
+            if DEBUG_MODE:
+                draw.text((30, 30), f"{str(otherRenderGroupIndex)}", fill=(0, 0, 0, 255), font=ImageFont.truetype("Helvetica", 50))
+            otherGroupImage.putalpha(int(scoreOpacity*255))
+            
+            if renderGroupSide == 'top':
+                combined.paste(otherGroupImage, (0, VIDEO_HEIGHT // 2), otherGroupImage)
+            else:
+                combined.paste(otherGroupImage, (0, 0), otherGroupImage)
+
+        # Convert RGBA to RGB for video output
+        combined_rgb = combined.convert('RGB')
+        frame_array = np.array(combined_rgb)
 
         return frame_array
-        
 
-    video = VideoClip(make_frame, duration=total_seconds)
+    video = VideoClip(make_frame_sequential, duration=total_seconds)
 
     video.write_videofile(outputPath, fps=FPS, codec='libx264', audio=False)
 
